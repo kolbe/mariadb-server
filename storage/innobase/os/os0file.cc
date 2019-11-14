@@ -280,61 +280,42 @@ os_win32_device_io_control(
 /** Helper class for doing synchronous file IO. Currently, the objective
 is to hide the OS specific code, so that the higher level functions aren't
 peppered with #ifdef. Makes the code flow difficult to follow.  */
-class SyncFileIO {
+class SyncFileIO
+{
 public:
-	/** Constructor
-	@param[in]	fh	File handle
-	@param[in,out]	buf	Buffer to read/write
-	@param[in]	n	Number of bytes to read/write
-	@param[in]	offset	Offset where to read or write */
-	SyncFileIO(os_file_t fh, void* buf, ulint n, os_offset_t offset)
-		:
-		m_fh(fh),
-		m_buf(buf),
-		m_n(static_cast<ssize_t>(n)),
-		m_offset(offset)
-	{
-		ut_ad(m_n > 0);
-	}
+  /** Constructor
+  @param[in]     fh     File handle
+  @param[in,out] buf    Buffer to read/write
+  @param[in]     n      Number of bytes to read/write
+  @param[in]     offset Offset where to read or write */
+  SyncFileIO(os_file_t fh, void *buf, ulint n, os_offset_t offset) :
+    m_fh(fh), m_buf(buf), m_n(static_cast<ssize_t>(n)), m_offset(offset)
+  { ut_ad(m_n > 0); }
 
-	/** Destructor */
-	~SyncFileIO()
-	{
-		/* No op */
-	}
+  /** Do the read/write
+  @param[in]	request	The IO context and type
+  @return the number of bytes read/written or negative value on error */
+  ssize_t execute(const IORequest &request);
 
-	/** Do the read/write
-	@param[in]	request	The IO context and type
-	@return the number of bytes read/written or negative value on error */
-	ssize_t execute(const IORequest& request);
-
-	
-
-	/** Move the read/write offset up to where the partial IO succeeded.
-	@param[in]	n_bytes	The number of bytes to advance */
-	void advance(ssize_t n_bytes)
-	{
-		m_offset += n_bytes;
-
-		ut_ad(m_n >= n_bytes);
-
-		m_n -=  n_bytes;
-
-		m_buf = reinterpret_cast<uchar*>(m_buf) + n_bytes;
-	}
+  /** Move the read/write offset up to where the partial IO succeeded.
+  @param[in]	n_bytes	The number of bytes to advance */
+  void advance(ssize_t n_bytes)
+  {
+    m_offset+= n_bytes;
+    ut_ad(m_n >= n_bytes);
+    m_n-= n_bytes;
+    m_buf= reinterpret_cast<uchar*>(m_buf) + n_bytes;
+  }
 
 private:
-	/** Open file handle */
-	os_file_t		m_fh;
-
-	/** Buffer to read/write */
-	void*			m_buf;
-
-	/** Number of bytes to read/write */
-	ssize_t			m_n;
-
-	/** Offset from where to read/write */
-	os_offset_t		m_offset;
+  /** Open file handle */
+  const os_file_t m_fh;
+  /** Buffer to read/write */
+  void *m_buf;
+  /** Number of bytes to read/write */
+  ssize_t m_n;
+  /** Offset from where to read/write */
+  os_offset_t m_offset;
 };
 
 #undef USE_FILE_LOCK
@@ -1664,19 +1645,15 @@ Closes a file handle. In case of error, error number can be retrieved with
 os_file_get_last_error.
 @param[in]	file		Handle to close
 @return true if success */
-bool
-os_file_close_func(
-	os_file_t	file)
+bool os_file_close_func(os_file_t file)
 {
-	int	ret = close(file);
+  int ret= close(file);
 
-	if (ret == -1) {
-		os_file_handle_error(NULL, "close");
+  if (!ret)
+    return true;
 
-		return(false);
-	}
-
-	return(true);
+  os_file_handle_error(NULL, "close");
+  return false;
 }
 
 /** Gets a file size.
@@ -2500,7 +2477,7 @@ os_file_create_func(
 
 	switch (srv_file_flush_method)
 	{
-	case SRV_O_DSYNC: 
+	case SRV_O_DSYNC:
 		if (type == OS_LOG_FILE) {
 			/* Map O_SYNC to FILE_WRITE_THROUGH */
 			attributes |= FILE_FLAG_WRITE_THROUGH;
@@ -2509,11 +2486,10 @@ os_file_create_func(
 
 	case SRV_O_DIRECT_NO_FSYNC:
 	case SRV_O_DIRECT:
-		if (type == OS_DATA_FILE) {
-			attributes |= FILE_FLAG_NO_BUFFERING;
+		if (type != OS_DATA_FILE) {
+			break;
 		}
-		break;
-
+		/* fall through */
 	case SRV_ALL_O_DIRECT_FSYNC:
 		/*Traditional Windows behavior, no buffering for any files.*/
 		attributes |= FILE_FLAG_NO_BUFFERING;
@@ -2848,22 +2824,18 @@ Closes a file handle. In case of error, error number can be retrieved with
 os_file_get_last_error.
 @param[in,own]	file		Handle to a file
 @return true if success */
-bool
-os_file_close_func(
-	os_file_t	file)
+bool os_file_close_func(os_file_t file)
 {
-	ut_a(file != 0);
+  ut_ad(file);
+  if (!CloseHandle(file))
+  {
+    os_file_handle_error(NULL, "close");
+    return false;
+  }
 
-
-	if (!CloseHandle(file)) {
-		os_file_handle_error(NULL, "close");
-		return false;
-	}
-
-	if(srv_thread_pool)
-		srv_thread_pool->unbind(file);
- 
-	return(true);
+  if(srv_thread_pool)
+    srv_thread_pool->unbind(file);
+  return true;
 }
 
 /** Gets a file size.
