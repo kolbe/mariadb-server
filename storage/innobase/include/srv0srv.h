@@ -785,13 +785,10 @@ srv_que_task_enqueue_low(
 /*=====================*/
 	que_thr_t*	thr);	/*!< in: query thread */
 
-/**********************************************************************//**
-Check whether purge or master is active.
-@return false if all are are suspended or have exited, true
-if any are still active. */
+#ifdef UNIV_DEBUG
+/** @return whether purge or master task is active */
 bool srv_any_background_activity();
-
-/*============================*/
+#endif
 
 extern "C" {
 

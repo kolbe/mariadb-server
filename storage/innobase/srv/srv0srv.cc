@@ -1558,18 +1558,18 @@ srv_inc_activity_count(void)
 	srv_sys.activity_count.inc();
 }
 
-/**
-Check whether purge or master are still active.
-@return true if something is active, false if not.
-*/
+#ifdef UNIV_DEBUG
+/** @return whether purge or master task is active */
 bool srv_any_background_activity()
 {
-	if (purge_sys.enabled() || srv_master_timer.get()) {
-		ut_ad(!srv_read_only_mode);
-		return true;
-	}
-	return false;
+  if (purge_sys.enabled() || srv_master_timer.get())
+  {
+    ut_ad(!srv_read_only_mode);
+    return true;
+  }
+  return false;
 }
+#endif /* UNIV_DEBUG */
 
 /** Wake up the InnoDB master thread if it was suspended (not sleeping). */
 void
