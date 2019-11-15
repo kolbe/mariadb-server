@@ -2278,29 +2278,23 @@ void srv_shutdown_bg_undo_sources()
 }
 
 /**
-Perform pre-shutdown task.
-
-Since purge tasks vall into server (some MDL acqusition,
-and compute virtual functions), let them shut down right
-after use connections go down while the rest of the server
-infrasture is still intact.
+  Shutdown purge to make sure that there is no possibility that we call any
+  plugin code (e.g., audit) inside virtual column computation.
 */
 void innodb_preshutdown()
 {
-	static bool first_time = true;
-	if (!first_time)
-		return;
-	first_time = false;
+  static bool first_time= true;
+  if (!first_time)
+    return;
+  first_time= false;
 
-	if (!srv_read_only_mode) {
-		if (!srv_fast_shutdown && srv_operation == SRV_OPERATION_NORMAL) {
-			while (trx_sys.any_active_transactions()) {
-				os_thread_sleep(1000);
-			}
-		}
-		srv_shutdown_bg_undo_sources();
-		srv_purge_shutdown();
-	}
+  if (srv_read_only_mode)
+    return;
+  if (!srv_fast_shutdown && srv_operation == SRV_OPERATION_NORMAL)
+    while (trx_sys.any_active_transactions())
+      os_thread_sleep(1000);
+  srv_shutdown_bg_undo_sources();
+  srv_purge_shutdown();
 }
 
 
@@ -2451,5 +2445,3 @@ srv_get_meta_data_filename(
 
 	ut_free(path);
 }
-
-

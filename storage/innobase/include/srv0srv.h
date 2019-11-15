@@ -794,7 +794,7 @@ void srv_monitor_task(void*);
 
 
 /** The periodic master task controlling the server. */
-void srv_master_callback(void *);
+void srv_master_callback(void*);
 
 
 /**
@@ -812,26 +812,19 @@ void srv_error_monitor_task(void*);
 
 } /* extern "C" */
 
-/**********************************************************************//**
-Get count of tasks in the queue.
-@return number of tasks in queue */
-ulint
-srv_get_task_queue_length(void);
-/*===========================*/
-
+#ifdef UNIV_DEBUG
+/** @return number of tasks in queue */
+ulint srv_get_task_queue_length();
+#endif
 
 /** Wakeup the purge threads. */
-void
-srv_purge_wakeup();
+void srv_purge_wakeup();
 
 /** Shut down the purge threads. */
 void srv_purge_shutdown();
 
 /** Init purge tasks*/
 void srv_init_purge_tasks(uint n_max);
-
-/** Shut down purge tasks*/
-void srv_shutdown_purge_tasks();
 
 #ifdef UNIV_DEBUG
 /** Disables master thread. It's used by:
@@ -1027,18 +1020,15 @@ extern std::unique_ptr<tpool::timer> srv_master_timer;
 extern std::unique_ptr<tpool::timer> srv_error_monitor_timer;
 extern std::unique_ptr<tpool::timer> srv_monitor_timer;
 
-#define SRV_MONITOR_TIMER_PERIOD 5000
 static inline void srv_monitor_timer_schedule_now()
 {
-	srv_monitor_timer->set_time(0, SRV_MONITOR_TIMER_PERIOD);
+  srv_monitor_timer->set_time(0, 5000);
 }
-static inline void srv_start_periodic_timer(
-	std::unique_ptr<tpool::timer>& timer,
-	void (*func)(void*),
-	int period)
+static inline void srv_start_periodic_timer(std::unique_ptr<tpool::timer>& t,
+                                            void (*func)(void*), int period)
 {
-	timer.reset(srv_thread_pool->create_timer(func));
-	timer->set_time(0, period);
+  t.reset(srv_thread_pool->create_timer(func));
+  t->set_time(0, period);
 }
 
 void srv_thread_pool_init();
