@@ -287,8 +287,7 @@ Must be called before dict_stats_thread() is started. */
 void
 dict_stats_init()
 {
-	ut_a(!srv_read_only_mode);
-
+	ut_ad(!srv_read_only_mode);
 
 	/* The recalc_pool_mutex is acquired from:
 	1) the background stats gathering thread before any other latch
@@ -315,13 +314,12 @@ Free resources allocated by dict_stats_init(), must be called
 after dict_stats task has exited. */
 void
 dict_stats_deinit()
-/*======================*/
 {
 	if (!stats_initialised) {
 		return;
 	}
 
-	ut_a(!srv_read_only_mode);
+	ut_ad(!srv_read_only_mode);
 	stats_initialised = false;
 
 	dict_stats_recalc_pool_deinit();
