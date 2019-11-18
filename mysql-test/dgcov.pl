@@ -162,7 +162,9 @@ sub gcov_one_file {
   }
 
   # now, read the generated file
-  open FH, '<', "$_.gcov" or die "open(<$_.gcov): $!";
+  my $f=substr $_, 0, -5;
+  open FH, '<', "$f.gcov" or die "open(<$f.gcov): $!";
+  undef $f;
   my $fname;
   while (<FH>) {
     chomp;
