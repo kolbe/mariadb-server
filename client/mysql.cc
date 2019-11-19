@@ -281,9 +281,9 @@ static COMMANDS commands[] = {
   { "edit",   'e', com_edit,   0, "Edit command with $EDITOR."},
 #endif
   { "ego",    'G', com_ego,    0,
-    "Send command to MariaDB server, display result vertically."},
+    "Send command to TiDB server, display result vertically."},
   { "exit",   'q', com_quit,   0, "Exit mysql. Same as quit."},
-  { "go",     'g', com_go,     0, "Send command to MariaDB server." },
+  { "go",     'g', com_go,     0, "Send command to TiDB server." },
   { "help",   'h', com_help,   1, "Display this help." },
 #ifdef USE_POPEN
   { "nopager",'n', com_nopager,0, "Disable pager, print to stdout." },
@@ -1229,6 +1229,8 @@ int main(int argc,char *argv[])
 
   if (!status.batch)
   {
+    put_info("\nWelcome to TiDB! Commands end with ; or \\g.", INFO_INFO);
+         /*
     put_info("Welcome to the MariaDB monitor.  Commands end with ; or \\g.",
              INFO_INFO);
     my_snprintf((char*) glob_buffer.ptr(), glob_buffer.alloced_length(),
@@ -1236,7 +1238,10 @@ int main(int argc,char *argv[])
             mysql_get_server_name(&mysql),
             mysql_thread_id(&mysql), server_version_string(&mysql));
     put_info((char*) glob_buffer.ptr(),INFO_INFO);
-    put_info(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"), INFO_INFO);
+    */
+    // my_snprintf((char*) glob_buffer.ptr(), glob_buffer.alloced_length(), "Client ");
+    // printf("Client %s\n",ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
+    // put_info(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"), INFO_INFO);
   }
 
 #ifdef HAVE_READLINE
@@ -3139,8 +3144,8 @@ com_help(String *buffer __attribute__((unused)),
 	  return com_server_help(buffer,line,help_arg);
   }
 
-  put_info("\nGeneral information about MariaDB can be found at\n"
-           "http://mariadb.org\n", INFO_INFO);
+  put_info("\nGeneral information about TiDB can be found at\n"
+           "https://pingcap.com/docs/\n", INFO_INFO);
   put_info("List of all client commands:", INFO_INFO);
   if (!named_cmds)
     put_info("Note that all text commands must be first on line and end with ';'",INFO_INFO);
@@ -5170,7 +5175,7 @@ static const char *construct_prompt()
 	break;
       case 'N':
         if (connected)
-          processed_prompt.append(mysql_get_server_name(&mysql));
+          processed_prompt.append("TiDB");
         else
           processed_prompt.append("unknown");
         break;
