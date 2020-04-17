@@ -61,6 +61,7 @@ public:
   wsrep::view get_view(wsrep::client_service&, const wsrep::id& own_id);
 
   wsrep::gtid get_position(wsrep::client_service&);
+  void set_position(wsrep::client_service&, const wsrep::gtid&);
 
   void log_state_change(enum wsrep::server_state::state,
                         enum wsrep::server_state::state);
@@ -86,5 +87,15 @@ private:
 class Wsrep_applier_service;
 Wsrep_applier_service*
 wsrep_create_streaming_applier(THD *orig_thd, const char *ctx);
+
+/**
+   Helper method to create new storage service.
+
+   @param orig_thd Original thd context to copy operation context from.
+   @param ctx Context string for debug logging.
+*/
+class Wsrep_storage_service;
+Wsrep_storage_service*
+wsrep_create_storage_service(THD *orig_thd, const char *ctx);
 
 #endif /* WSREP_SERVER_SERVICE */

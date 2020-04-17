@@ -1107,7 +1107,7 @@ The following specify which files/extra groups are read (specified before remain
  disable; STATE to track just transaction state (Is there
  an active transaction? Does it have any data? etc.);
  CHARACTERISTICS to track transaction state and report all
- statements needed to start a transaction withthe same
+ statements needed to start a transaction with the same
  characteristics (isolation level, read only/read
  write,snapshot - but not any work done / data modified
  within the transaction).
@@ -1314,10 +1314,10 @@ The following specify which files/extra groups are read (specified before remain
  application layer.If set to 0, system dependent default
  is used. (Automatically configured unless set explicitly)
  --tcp-keepalive-time=# 
- Timeout, in milliseconds, with no activity until the
- first TCP keep-alive packet is sent.If set to 0, system
- dependent default is used. (Automatically configured
- unless set explicitly)
+ Timeout, in seconds, with no activity until the first TCP
+ keep-alive packet is sent.If set to 0, system dependent
+ default is used. (Automatically configured unless set
+ explicitly)
  --tcp-nodelay       Set option TCP_NODELAY (disable Nagle's algorithm) on
  socket
  (Defaults to on; use --skip-tcp-nodelay to disable.)
@@ -1626,7 +1626,7 @@ performance-schema-events-waits-history-long-size -1
 performance-schema-events-waits-history-size -1
 performance-schema-hosts-size -1
 performance-schema-instrument 
-performance-schema-max-cond-classes 80
+performance-schema-max-cond-classes 90
 performance-schema-max-cond-instances -1
 performance-schema-max-digest-length 1024
 performance-schema-max-file-classes 50
@@ -1744,7 +1744,7 @@ system-versioning-alter-history ERROR
 table-cache 421
 table-definition-cache 400
 table-open-cache 421
-table-open-cache-instances 8
+table-open-cache-instances 1
 tc-heuristic-recover OFF
 tcp-keepalive-interval 0
 tcp-keepalive-probes 0
@@ -1773,5 +1773,5 @@ userstat FALSE
 verbose TRUE
 wait-timeout 28800
 
-To see what values a running MySQL server is using, type
+To see what variables a running MySQL server is using, type
 'mysqladmin variables' instead of 'mysqld --verbose --help'.

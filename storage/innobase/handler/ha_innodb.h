@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 2000, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2013, 2019, MariaDB Corporation.
+Copyright (c) 2013, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -439,6 +439,18 @@ public:
 	can_convert_blob(const Field_blob* field,
 			 const Column_definition& new_field) const override;
 
+	/** @return whether innodb_strict_mode is active */
+	static bool is_innodb_strict_mode(THD* thd);
+
+	/** @return whether innodb_strict_mode is active */
+	bool is_innodb_strict_mode()
+	{ return is_innodb_strict_mode(m_user_thd); }
+	Compare_keys
+	compare_key_parts(const Field& old_field,
+			  const Column_definition& new_field,
+			  const KEY_PART_INFO& old_part,
+			  const KEY_PART_INFO& new_part) const override;
+
 protected:
 	dberr_t innobase_get_autoinc(ulonglong* value);
 	dberr_t innobase_lock_autoinc();
@@ -630,7 +642,7 @@ public:
 	- all but name/path is used, when validating options and using flags. */
 	create_table_info_t(
 		THD*		thd,
-		TABLE*		form,
+		const TABLE*	form,
 		HA_CREATE_INFO*	create_info,
 		char*		table_name,
 		char*		remote_path,
@@ -677,6 +689,13 @@ public:
 	int prepare_create_table(const char* name, bool strict = true);
 
 	void allocate_trx();
+
+	/** Checks that every index have sane size. Depends on strict mode */
+	bool row_size_is_acceptable(const dict_table_t& table,
+				    bool strict) const;
+	/** Checks that given index have sane size. Depends on strict mode */
+	bool row_size_is_acceptable(const dict_index_t& index,
+				    bool strict) const;
 
 	/** Determines InnoDB table flags.
 	If strict_mode=OFF, this will adjust the flags to what should be assumed.
@@ -951,3 +970,15 @@ ib_push_frm_error(
 @return true if index column length exceeds limit */
 MY_ATTRIBUTE((warn_unused_result))
 bool too_big_key_part_length(size_t max_field_len, const KEY& key);
+
+/** This function is used to rollback one X/Open XA distributed transaction
+which is in the prepared state
+
+@param[in] hton InnoDB handlerton
+@param[in] xid X/Open XA transaction identification
+
+@return 0 or error number */
+int innobase_rollback_by_xid(handlerton* hton, XID* xid);
+
+/** Free tablespace resources allocated. */
+void innobase_space_shutdown();

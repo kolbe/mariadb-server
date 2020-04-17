@@ -46,7 +46,6 @@
 #include <cstdlib>
 #include <string>
 #include "log_event.h"
-#include <slave.h>
 
 #include <sstream>
 
@@ -151,6 +150,10 @@ mysql_mutex_t LOCK_wsrep_config_state;
 mysql_mutex_t LOCK_wsrep_group_commit;
 mysql_mutex_t LOCK_wsrep_SR_pool;
 mysql_mutex_t LOCK_wsrep_SR_store;
+mysql_mutex_t LOCK_wsrep_joiner_monitor;
+mysql_mutex_t LOCK_wsrep_donor_monitor;
+mysql_cond_t  COND_wsrep_joiner_monitor;
+mysql_cond_t  COND_wsrep_donor_monitor;
 
 int wsrep_replaying= 0;
 ulong  wsrep_running_threads = 0; // # of currently running wsrep
@@ -161,7 +164,7 @@ ulong  wsrep_running_rollbacker_threads = 0; // # of running
 ulong  my_bind_addr;
 
 #ifdef HAVE_PSI_INTERFACE
-PSI_mutex_key 
+PSI_mutex_key
   key_LOCK_wsrep_replaying, key_LOCK_wsrep_ready, key_LOCK_wsrep_sst,
   key_LOCK_wsrep_sst_thread, key_LOCK_wsrep_sst_init,
   key_LOCK_wsrep_slave_threads, key_LOCK_wsrep_desync,
@@ -169,13 +172,15 @@ PSI_mutex_key
   key_LOCK_wsrep_group_commit,
   key_LOCK_wsrep_SR_pool,
   key_LOCK_wsrep_SR_store,
-  key_LOCK_wsrep_thd_queue;
+  key_LOCK_wsrep_thd_queue,
+  key_LOCK_wsrep_joiner_monitor,
+  key_LOCK_wsrep_donor_monitor;
 
 PSI_cond_key key_COND_wsrep_thd,
   key_COND_wsrep_replaying, key_COND_wsrep_ready, key_COND_wsrep_sst,
   key_COND_wsrep_sst_init, key_COND_wsrep_sst_thread,
-  key_COND_wsrep_thd_queue, key_COND_wsrep_slave_threads;
-  
+  key_COND_wsrep_thd_queue, key_COND_wsrep_slave_threads,
+  key_COND_wsrep_joiner_monitor, key_COND_wsrep_donor_monitor;
 
 PSI_file_key key_file_wsrep_gra_log;
 
@@ -193,7 +198,9 @@ static PSI_mutex_info wsrep_mutexes[]=
   { &key_LOCK_wsrep_config_state, "LOCK_wsrep_config_state", PSI_FLAG_GLOBAL},
   { &key_LOCK_wsrep_group_commit, "LOCK_wsrep_group_commit", PSI_FLAG_GLOBAL},
   { &key_LOCK_wsrep_SR_pool, "LOCK_wsrep_SR_pool", PSI_FLAG_GLOBAL},
-  { &key_LOCK_wsrep_SR_store, "LOCK_wsrep_SR_store", PSI_FLAG_GLOBAL}
+  { &key_LOCK_wsrep_SR_store, "LOCK_wsrep_SR_store", PSI_FLAG_GLOBAL},
+  { &key_LOCK_wsrep_joiner_monitor, "LOCK_wsrep_joiner_monitor", PSI_FLAG_GLOBAL},
+  { &key_LOCK_wsrep_donor_monitor, "LOCK_wsrep_donor_monitor", PSI_FLAG_GLOBAL}
 };
 
 static PSI_cond_info wsrep_conds[]=
@@ -204,7 +211,9 @@ static PSI_cond_info wsrep_conds[]=
   { &key_COND_wsrep_sst_thread, "wsrep_sst_thread", 0},
   { &key_COND_wsrep_thd, "THD::COND_wsrep_thd", 0},
   { &key_COND_wsrep_replaying, "COND_wsrep_replaying", PSI_FLAG_GLOBAL},
-  { &key_COND_wsrep_slave_threads, "COND_wsrep_wsrep_slave_threads", PSI_FLAG_GLOBAL}
+  { &key_COND_wsrep_slave_threads, "COND_wsrep_wsrep_slave_threads", PSI_FLAG_GLOBAL},
+  { &key_COND_wsrep_joiner_monitor, "COND_wsrep_joiner_monitor", PSI_FLAG_GLOBAL},
+  { &key_COND_wsrep_donor_monitor, "COND_wsrep_donor_monitor", PSI_FLAG_GLOBAL}
 };
 
 static PSI_file_info wsrep_files[]=
@@ -213,14 +222,17 @@ static PSI_file_info wsrep_files[]=
 };
 
 PSI_thread_key key_wsrep_sst_joiner, key_wsrep_sst_donor,
-  key_wsrep_rollbacker, key_wsrep_applier;
+  key_wsrep_rollbacker, key_wsrep_applier,
+  key_wsrep_sst_joiner_monitor, key_wsrep_sst_donor_monitor;
 
 static PSI_thread_info wsrep_threads[]=
 {
  {&key_wsrep_sst_joiner, "wsrep_sst_joiner_thread", PSI_FLAG_GLOBAL},
  {&key_wsrep_sst_donor, "wsrep_sst_donor_thread", PSI_FLAG_GLOBAL},
  {&key_wsrep_rollbacker, "wsrep_rollbacker_thread", PSI_FLAG_GLOBAL},
- {&key_wsrep_applier, "wsrep_applier_thread", PSI_FLAG_GLOBAL}
+ {&key_wsrep_applier, "wsrep_applier_thread", PSI_FLAG_GLOBAL},
+ {&key_wsrep_sst_joiner_monitor, "wsrep_sst_joiner_monitor", PSI_FLAG_GLOBAL},
+ {&key_wsrep_sst_donor_monitor, "wsrep_sst_donor_monitor", PSI_FLAG_GLOBAL}
 };
 
 #endif /* HAVE_PSI_INTERFACE */
@@ -550,11 +562,11 @@ static std::string wsrep_server_incoming_address()
     {
       if (node_addr.size())
       {
-        size_t const ip_len= wsrep_host_len(node_addr.c_str(), node_addr.size());
-        if (ip_len + 7 /* :55555\0 */ < inc_addr_max)
+        size_t const ip_len_mdb= wsrep_host_len(node_addr.c_str(), node_addr.size());
+        if (ip_len_mdb + 7 /* :55555\0 */ < inc_addr_max)
         {
-          memcpy (inc_addr, node_addr.c_str(), ip_len);
-          snprintf(inc_addr + ip_len, inc_addr_max - ip_len, ":%u",
+          memcpy (inc_addr, node_addr.c_str(), ip_len_mdb);
+          snprintf(inc_addr + ip_len_mdb, inc_addr_max - ip_len_mdb, ":%u",
                    (int)mysqld_port);
         }
         else
@@ -789,6 +801,13 @@ void wsrep_thr_init()
                    &LOCK_wsrep_SR_pool, MY_MUTEX_INIT_FAST);
   mysql_mutex_init(key_LOCK_wsrep_SR_store,
                    &LOCK_wsrep_SR_store, MY_MUTEX_INIT_FAST);
+  mysql_mutex_init(key_LOCK_wsrep_joiner_monitor,
+                   &LOCK_wsrep_joiner_monitor, MY_MUTEX_INIT_FAST);
+  mysql_mutex_init(key_LOCK_wsrep_donor_monitor,
+                   &LOCK_wsrep_donor_monitor, MY_MUTEX_INIT_FAST);
+  mysql_cond_init(key_COND_wsrep_joiner_monitor, &COND_wsrep_joiner_monitor, NULL);
+  mysql_cond_init(key_COND_wsrep_donor_monitor, &COND_wsrep_donor_monitor, NULL);
+
   DBUG_VOID_RETURN;
 }
 
@@ -892,6 +911,10 @@ void wsrep_thr_deinit()
   mysql_mutex_destroy(&LOCK_wsrep_group_commit);
   mysql_mutex_destroy(&LOCK_wsrep_SR_pool);
   mysql_mutex_destroy(&LOCK_wsrep_SR_store);
+  mysql_mutex_destroy(&LOCK_wsrep_joiner_monitor);
+  mysql_mutex_destroy(&LOCK_wsrep_donor_monitor);
+  mysql_cond_destroy(&COND_wsrep_joiner_monitor);
+  mysql_cond_destroy(&COND_wsrep_donor_monitor);
 
   delete wsrep_config_state;
   wsrep_config_state= 0;                        // Safety
@@ -1646,6 +1669,39 @@ static bool wsrep_can_run_in_toi(THD *thd, const char *db, const char *table,
     {
       return false;
     }
+    /*
+      If mariadb master has replicated a CTAS, we should not replicate the create table
+      part separately as TOI, but to replicate both create table and following inserts
+      as one write set.
+      Howver, if CTAS creates empty table, we should replicate the create table alone
+      as TOI. We have to do relay log event lookup to see if row events follow the
+      create table event.
+    */
+    if (thd->slave_thread && !(thd->rgi_slave->gtid_ev_flags2 & Gtid_log_event::FL_STANDALONE))
+    {
+      /* this is CTAS, either empty or populated table */
+      ulonglong event_size = 0;
+      enum Log_event_type ev_type= wsrep_peak_event(thd->rgi_slave, &event_size);
+      switch (ev_type)
+      {
+      case QUERY_EVENT:
+        /* CTAS with empty table, we replicate create table as TOI */
+        break;
+
+      case TABLE_MAP_EVENT:
+        WSREP_DEBUG("replicating CTAS of empty table as TOI");
+        // fall through
+      case WRITE_ROWS_EVENT:
+        /* CTAS with populated table, we replicate later at commit time */
+        WSREP_DEBUG("skipping create table of CTAS replication");
+        return false;
+
+      default:
+        WSREP_WARN("unexpected async replication event: %d", ev_type);
+      }
+      return true;
+    }
+    /* no next async replication event */
     return true;
 
   case SQLCOM_CREATE_VIEW:
@@ -1853,9 +1909,7 @@ static int wsrep_TOI_begin(THD *thd, const char *db, const char *table,
 
   wsrep::client_state& cs(thd->wsrep_cs());
   int ret= cs.enter_toi_local(key_array,
-                              wsrep::const_buffer(buff.ptr, buff.len),
-                              wsrep::provider::flag::start_transaction |
-                              wsrep::provider::flag::commit);
+                              wsrep::const_buffer(buff.ptr, buff.len));
 
   if (ret)
   {
@@ -1974,10 +2028,10 @@ int wsrep_to_isolation_begin(THD *thd, const char *db_, const char *table_,
   DBUG_ASSERT(wsrep_thd_is_local(thd));
   DBUG_ASSERT(thd->wsrep_trx().ws_meta().seqno().is_undefined());
 
-  if (thd->global_read_lock.is_acquired())
+  if (Wsrep_server_state::instance().desynced_on_pause())
   {
-    WSREP_DEBUG("Aborting TOI: Global Read-Lock (FTWRL) in place: %s %llu",
-                WSREP_QUERY(thd), thd->thread_id);
+    my_message(ER_UNKNOWN_COM_ERROR,
+               "Aborting TOI: Global Read-Lock (FTWRL) in place.", MYF(0));
     return -1;
   }
 
@@ -2101,12 +2155,18 @@ void wsrep_handle_mdl_conflict(MDL_context *requestor_ctx,
     if (wsrep_thd_is_toi(granted_thd) ||
         wsrep_thd_is_applying(granted_thd))
     {
-      if (wsrep_thd_is_SR(granted_thd) && !wsrep_thd_is_SR(request_thd))
+      if (wsrep_thd_is_aborting(granted_thd))
+      {
+        WSREP_DEBUG("BF thread waiting for SR in aborting state");
+        ticket->wsrep_report(wsrep_debug);
+        mysql_mutex_unlock(&granted_thd->LOCK_thd_data);
+      }
+      else if (wsrep_thd_is_SR(granted_thd) && !wsrep_thd_is_SR(request_thd))
       {
         WSREP_MDL_LOG(INFO, "MDL conflict, DDL vs SR", 
                       schema, schema_len, request_thd, granted_thd);
         mysql_mutex_unlock(&granted_thd->LOCK_thd_data);
-        wsrep_abort_thd((void*)request_thd, (void*)granted_thd, 1);
+        wsrep_abort_thd(request_thd, granted_thd, 1);
       }
       else
       {
@@ -2130,7 +2190,7 @@ void wsrep_handle_mdl_conflict(MDL_context *requestor_ctx,
                   wsrep_thd_transaction_state_str(granted_thd));
       ticket->wsrep_report(wsrep_debug);
       mysql_mutex_unlock(&granted_thd->LOCK_thd_data);
-      wsrep_abort_thd((void*)request_thd, (void*)granted_thd, 1);
+      wsrep_abort_thd(request_thd, granted_thd, 1);
     }
     else
     {
@@ -2252,6 +2312,7 @@ int wsrep_wait_committing_connections_close(int wait_time)
 {
   int sleep_time= 100;
 
+  WSREP_DEBUG("wait for committing transaction to close: %d sleep: %d", wait_time, sleep_time);
   while (server_threads.iterate(have_committing_connections) && wait_time > 0)
   {
     WSREP_DEBUG("wait for committing transaction to close: %d", wait_time);

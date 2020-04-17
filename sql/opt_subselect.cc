@@ -861,7 +861,12 @@ bool subquery_types_allow_materialization(THD* thd, Item_in_subselect *in_subs)
   OPT_TRACE_TRANSFORM(thd, trace_wrapper, trace_transform,
                      in_subs->get_select_lex()->select_number,
                       "IN (SELECT)", "materialization");
-  
+
+  /*
+    The checks here must be kept in sync with the one in
+    Item_func_in::in_predicate_to_in_subs_transformer().
+  */
+
   bool all_are_fields= TRUE;
   uint32 total_key_length = 0;
   for (uint i= 0; i < elements; i++)
@@ -3045,12 +3050,13 @@ bool Sj_materialization_picker::check_qep(JOIN *join,
     }
     else
     {
-      Json_writer_object trace(join->thd);
-      trace.add("strategy", "SJ-Materialization");
       /* This is SJ-Materialization with lookups */
       Cost_estimate prefix_cost; 
       signed int first_tab= (int)idx - mat_info->tables;
       double prefix_rec_count;
+      Json_writer_object trace(join->thd);
+      trace.add("strategy", "SJ-Materialization");
+
       if (first_tab < (int)join->const_tables)
       {
         prefix_cost.reset();
@@ -3079,7 +3085,7 @@ bool Sj_materialization_picker::check_qep(JOIN *join,
       *record_count= prefix_rec_count;
       *handled_fanout= new_join_tab->emb_sj_nest->sj_inner_tables;
       *strategy= SJ_OPT_MATERIALIZE;
-      if (unlikely(join->thd->trace_started()))
+      if (unlikely(trace.trace_started()))
       {
         trace.add("records", *record_count);
         trace.add("read_time", *read_time);
@@ -3144,9 +3150,24 @@ bool Sj_materialization_picker::check_qep(JOIN *join,
 
     *strategy= SJ_OPT_MATERIALIZE_SCAN;
     *read_time=    prefix_cost;
-    *record_count= prefix_rec_count / mat_info->rows_with_duplicates;
+    /*
+      Note: the next line means we did not remove the subquery's fanout from
+      *record_count. It needs to be removed, as the join prefix is
+
+        ntX  SJM-SCAN(it1 ... itN) | (ot1 ... otN) ...
+
+      here, the SJM-SCAN may have introduced subquery's fanout (duplicate rows,
+      rows that don't have matches in ot1_i). All this fanout is gone after
+      table otN (or earlier) but taking it into account is hard.
+
+      Some consolation here is that SJM-Scan strategy is applicable when the
+      subquery is smaller than tables otX. If the subquery has large cardinality,
+      we can greatly overestimate *record_count here, but it doesn't matter as
+      SJ-Materialization-Lookup is a better strategy anyway.
+    */
+    *record_count= prefix_rec_count;
     *handled_fanout= mat_nest->sj_inner_tables;
-    if (unlikely(join->thd->trace_started()))
+    if (unlikely(trace.trace_started()))
     {
       trace.add("records", *record_count);
       trace.add("read_time", *read_time);
@@ -3246,7 +3267,7 @@ bool LooseScan_picker::check_qep(JOIN *join,
     */
     *strategy= SJ_OPT_LOOSE_SCAN;
     *handled_fanout= first->table->emb_sj_nest->sj_inner_tables;
-    if (unlikely(join->thd->trace_started()))
+    if (unlikely(trace.trace_started()))
     {
       trace.add("records", *record_count);
       trace.add("read_time", *read_time);
@@ -3364,7 +3385,7 @@ bool Firstmatch_picker::check_qep(JOIN *join,
         *handled_fanout= firstmatch_need_tables;
         /* *record_count and *read_time were set by the above call */
         *strategy= SJ_OPT_FIRST_MATCH;
-        if (unlikely(join->thd->trace_started()))
+        if (unlikely(trace.trace_started()))
         {
           trace.add("records", *record_count);
           trace.add("read_time", *read_time);
@@ -3449,6 +3470,7 @@ bool Duplicate_weedout_picker::check_qep(JOIN *join,
     uint temptable_rec_size;
     Json_writer_object trace(join->thd);
     trace.add("strategy", "DuplicateWeedout");
+
     if (first_tab == join->const_tables)
     {
       prefix_rec_count= 1.0;
@@ -3509,7 +3531,7 @@ bool Duplicate_weedout_picker::check_qep(JOIN *join,
     *record_count= prefix_rec_count * sj_outer_fanout;
     *handled_fanout= dups_removed_fanout;
     *strategy= SJ_OPT_DUPS_WEEDOUT;
-    if (unlikely(join->thd->trace_started()))
+    if (unlikely(trace.trace_started()))
     {
       trace.add("records", *record_count);
       trace.add("read_time", *read_time);
@@ -3707,18 +3729,20 @@ static void recalculate_prefix_record_count(JOIN *join, uint start, uint end)
 
 void fix_semijoin_strategies_for_picked_join_order(JOIN *join)
 {
+  join->sjm_lookup_tables= 0;
+  join->sjm_scan_tables= 0;
+  if (!join->select_lex->sj_nests.elements)
+    return;
+
+  THD *thd= join->thd;
   uint table_count=join->table_count;
   uint tablenr;
   table_map remaining_tables= 0;
   table_map handled_tabs= 0;
-  join->sjm_lookup_tables= 0;
-  join->sjm_scan_tables= 0;
-  THD *thd= join->thd;
-  if (!join->select_lex->sj_nests.elements)
-    return;
   Json_writer_object trace_wrapper(thd);
   Json_writer_array trace_semijoin_strategies(thd,
-                                   "fix_semijoin_strategies_for_picked_join_order");
+                                              "fix_semijoin_strategies_for_picked_join_order");
+
   for (tablenr= table_count - 1 ; tablenr != join->const_tables - 1; tablenr--)
   {
     POSITION *pos= join->best_positions + tablenr;
@@ -4562,7 +4586,7 @@ SJ_TMP_TABLE::create_sj_weedout_tmp_table(THD *thd)
     field->reset();
     /*
       Test if there is a default field value. The test for ->ptr is to skip
-      'offset' fields generated by initalize_tables
+      'offset' fields generated by initialize_tables
     */
     // Initialize the table field:
     bzero(field->ptr, field->pack_length());

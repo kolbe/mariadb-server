@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2015, Oracle and/or its affiliates.
-   Copyright (c) 2008, 2019, MariaDB
+   Copyright (c) 2008, 2020, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -357,7 +357,8 @@ QUICK_RANGE_SELECT *get_quick_select(PARAM *param,uint index,
 static TRP_RANGE *get_key_scans_params(PARAM *param, SEL_TREE *tree,
                                        bool index_read_must_be_used,
                                        bool update_tbl_stats,
-                                       double read_time);
+                                       double read_time,
+                                       bool ror_scans_required);
 static
 TRP_INDEX_INTERSECT *get_best_index_intersect(PARAM *param, SEL_TREE *tree,
                                               double read_time);
@@ -2258,6 +2259,7 @@ public:
 void TRP_RANGE::trace_basic_info(PARAM *param,
                                  Json_writer_object *trace_object) const
 {
+  DBUG_ASSERT(trace_object->trace_started());
   DBUG_ASSERT(param->using_real_indexes);
   const uint keynr_in_table= param->real_keynr[key_idx];
 
@@ -2322,6 +2324,7 @@ void TRP_ROR_UNION::trace_basic_info(PARAM *param,
                                      Json_writer_object *trace_object) const
 {
   THD *thd= param->thd;
+  DBUG_ASSERT(trace_object->trace_started());
   trace_object->add("type", "index_roworder_union");
   Json_writer_array smth_trace(thd, "union_of");
   for (TABLE_READ_PLAN **current= first_ror; current != last_ror; current++)
@@ -2357,6 +2360,7 @@ void TRP_INDEX_INTERSECT::trace_basic_info(PARAM *param,
                                        Json_writer_object *trace_object) const
 {
   THD *thd= param->thd;
+  DBUG_ASSERT(trace_object->trace_started());
   trace_object->add("type", "index_sort_intersect");
   Json_writer_array smth_trace(thd, "index_sort_intersect_of");
   for (TRP_RANGE **current= range_scans; current != range_scans_end;
@@ -2390,6 +2394,7 @@ void TRP_INDEX_MERGE::trace_basic_info(PARAM *param,
                                        Json_writer_object *trace_object) const
 {
   THD *thd= param->thd;
+  DBUG_ASSERT(trace_object->trace_started());
   trace_object->add("type", "index_merge");
   Json_writer_array smth_trace(thd, "index_merge_of");
   for (TRP_RANGE **current= range_scans; current != range_scans_end; current++)
@@ -2458,6 +2463,8 @@ void TRP_GROUP_MIN_MAX::trace_basic_info(PARAM *param,
                                 Json_writer_object *trace_object) const
 {
   THD *thd= param->thd;
+  DBUG_ASSERT(trace_object->trace_started());
+
   trace_object->add("type", "index_group").add("index", index_info->name);
 
   if (min_max_arg_part)
@@ -2631,7 +2638,7 @@ static int fill_used_fields_bitmap(PARAM *param)
      force_quick_range is really needed.
 
   RETURN
-   -1 if impossible select (i.e. certainly no rows will be selected)
+   -1 if error or impossible select (i.e. certainly no rows will be selected)
     0 if can't use quick_select
     1 if found usable ranges and quick select has been successfully created.
 */
@@ -2731,7 +2738,7 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
     {
       thd->no_errors=0;
       free_root(&alloc,MYF(0));			// Return memory & allocator
-      DBUG_RETURN(0);				// Can't use range
+      DBUG_RETURN(-1);				// Error
     }
     key_parts= param.key_parts;
 
@@ -2799,7 +2806,7 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
     {
       thd->no_errors=0;
       free_root(&alloc,MYF(0));			// Return memory & allocator
-      DBUG_RETURN(0);				// Can't use range
+      DBUG_RETURN(-1);				// Error
     }
 
     thd->mem_root= &alloc;
@@ -2833,7 +2840,7 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
     {
       {
         Json_writer_array trace_range_summary(thd,
-                                           "setup_range_conditions");
+                                              "setup_range_conditions");
         tree= cond->get_mm_tree(&param, &cond);
       }
       if (tree)
@@ -2854,6 +2861,13 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
           trace_range.add("range_scan_possible", false);
           tree= NULL;
         }
+      }
+      else if (thd->is_error())
+      {
+        thd->no_errors=0;
+        thd->mem_root= param.old_root;
+        free_root(&alloc, MYF(0));
+        DBUG_RETURN(-1);
       }
     }
 
@@ -2902,8 +2916,9 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
       remove_nonrange_trees(&param, tree);
 
       /* Get best 'range' plan and prepare data for making other plans */
-      if ((range_trp= get_key_scans_params(&param, tree, FALSE, TRUE,
-                                           best_read_time)))
+      if ((range_trp= get_key_scans_params(&param, tree,
+                                           only_single_index_range_scan, TRUE,
+                                           best_read_time, FALSE)))
       {
         best_trp= range_trp;
         best_read_time= best_trp->read_cost;
@@ -4890,7 +4905,8 @@ double get_sweep_read_cost(const PARAM *param, ha_rows records)
 {
   double result;
   DBUG_ENTER("get_sweep_read_cost");
-  if (param->table->file->primary_key_is_clustered())
+  if (param->table->file->primary_key_is_clustered() ||
+      param->table->file->stats.block_size == 0 /* HEAP */)
   {
     /*
       We are using the primary key to find the rows.
@@ -5070,7 +5086,8 @@ TABLE_READ_PLAN *get_best_disjunct_quick(PARAM *param, SEL_IMERGE *imerge,
     DBUG_EXECUTE("info", print_sel_tree(param, *ptree, &(*ptree)->keys_map,
                                         "tree in SEL_IMERGE"););
     Json_writer_object trace_idx(thd);
-    if (!(*cur_child= get_key_scans_params(param, *ptree, TRUE, FALSE, read_time)))
+    if (!(*cur_child= get_key_scans_params(param, *ptree, TRUE, FALSE,
+                                           read_time, TRUE)))
     {
       /*
         One of index scans in this index_merge is more expensive than entire
@@ -5432,7 +5449,7 @@ TABLE_READ_PLAN *merge_same_index_scans(PARAM *param, SEL_IMERGE *imerge,
          index merge retrievals are not well calibrated
     */
     trp= get_key_scans_params(param, *imerge->trees, FALSE, TRUE,
-                              read_time);
+                              read_time, TRUE);
   }
 
   DBUG_RETURN(trp); 
@@ -5595,6 +5612,8 @@ ha_rows get_table_cardinality_for_index_intersect(TABLE *table)
 static
 void print_keyparts(THD *thd, KEY *key, uint key_parts)
 {
+  DBUG_ASSERT(thd->trace_started());
+
   KEY_PART_INFO *part= key->key_part;
   Json_writer_array keyparts= Json_writer_array(thd, "keyparts");
   for(uint i= 0; i < key_parts; i++, part++)
@@ -6384,6 +6403,8 @@ void TRP_ROR_INTERSECT::trace_basic_info(PARAM *param,
                                          Json_writer_object *trace_object) const
 {
   THD *thd= param->thd;
+  DBUG_ASSERT(trace_object->trace_started());
+
   trace_object->add("type", "index_roworder_intersect");
   trace_object->add("rows", records);
   trace_object->add("cost", read_cost);
@@ -7312,6 +7333,7 @@ TRP_ROR_INTERSECT *get_best_covering_ror_intersect(PARAM *param,
       index_read_must_be_used if TRUE, assume 'index only' option will be set
                              (except for clustered PK indexes)
       read_time    don't create read plans with cost > read_time.
+      ror_scans_required           set to TRUE for index merge
   RETURN
     Best range read plan
     NULL if no plan found or error occurred
@@ -7320,7 +7342,8 @@ TRP_ROR_INTERSECT *get_best_covering_ror_intersect(PARAM *param,
 static TRP_RANGE *get_key_scans_params(PARAM *param, SEL_TREE *tree,
                                        bool index_read_must_be_used, 
                                        bool update_tbl_stats,
-                                       double read_time)
+                                       double read_time,
+                                       bool ror_scans_required)
 {
   uint idx, UNINIT_VAR(best_idx);
   SEL_ARG *key_to_read= NULL;
@@ -7374,6 +7397,9 @@ static TRP_RANGE *get_key_scans_params(PARAM *param, SEL_TREE *tree,
       found_records= check_quick_select(param, idx, read_index_only, key,
                                         update_tbl_stats, &mrr_flags,
                                         &buf_size, &cost, &is_ror_scan);
+      if (ror_scans_required && !is_ror_scan &&
+          !optimizer_flag(param->thd, OPTIMIZER_SWITCH_INDEX_MERGE_SORT_UNION))
+        continue;
 
       if (found_records != HA_POS_ERROR && tree->index_scans &&
           (index_scan= (INDEX_SCAN_INFO *)alloc_root(param->mem_root,
@@ -7423,10 +7449,12 @@ static TRP_RANGE *get_key_scans_params(PARAM *param, SEL_TREE *tree,
       {
         trace_idx.add("chosen", false);
         if (found_records == HA_POS_ERROR)
+        {
           if (key->type == SEL_ARG::Type::MAYBE_KEY)
             trace_idx.add("cause", "depends on unread values");
           else
             trace_idx.add("cause", "unknown");
+        }
         else
           trace_idx.add("cause", "cost");
       }
@@ -9654,6 +9682,8 @@ and_all_keys(RANGE_OPT_PARAM *param, SEL_ARG *key1, SEL_ARG *key2,
   }
   if (key1->type == SEL_ARG::MAYBE_KEY)
   {
+    if (key2->type == SEL_ARG::KEY_RANGE)
+      return key2;
     key1->right= key1->left= &null_element;
     key1->next= key1->prev= 0;
   }
@@ -9754,7 +9784,7 @@ key_and(RANGE_OPT_PARAM *param, SEL_ARG *key1, SEL_ARG *key2, uint clone_flag)
       if (key2->next_key_part)
       {
 	key1->use_count--;			// Incremented in and_all_keys
-	return and_all_keys(param, key1, key2, clone_flag);
+        return and_all_keys(param, key1, key2->next_key_part, clone_flag);
       }
       key2->use_count--;			// Key2 doesn't have a tree
     }
@@ -15826,6 +15856,7 @@ static void trace_ranges(Json_writer_array *range_trace,
                          sel_arg_range_seq_next, 0, 0};
   KEY *keyinfo= param->table->key_info + param->real_keynr[idx];
   uint n_key_parts= param->table->actual_n_key_parts(keyinfo);
+  DBUG_ASSERT(range_trace->trace_started());
   seq.keyno= idx;
   seq.real_keyno= param->real_keynr[idx];
   seq.param= param;

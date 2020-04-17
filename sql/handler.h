@@ -2,7 +2,7 @@
 #define HANDLER_INCLUDED
 /*
    Copyright (c) 2000, 2019, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2019, MariaDB
+   Copyright (c) 2009, 2020, MariaDB
 
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License
@@ -927,6 +927,16 @@ enum tablespace_access_mode
   TS_NOT_ACCESSIBLE = 2
 };
 
+/* Statistics about batch operations like bulk_insert */
+struct ha_copy_info
+{
+  ha_rows records;        /* Used to check if rest of variables can be used */
+  ha_rows touched;
+  ha_rows copied;
+  ha_rows deleted;
+  ha_rows updated;
+};
+
 struct handlerton;
 class st_alter_tablespace : public Sql_alloc
 {
@@ -1512,9 +1522,9 @@ struct handlerton
      Used by open_table_error(), by the default rename_table and delete_table
      handler methods, and by the default discovery implementation.
   
-     For engines that have more than one file name extentions (separate
+     For engines that have more than one file name extensions (separate
      metadata, index, and/or data files), the order of elements is relevant.
-     First element of engine file name extentions array should be metadata
+     First element of engine file name extensions array should be metadata
      file extention. This is implied by the open_table_error()
      and the default discovery implementation.
      
@@ -2895,7 +2905,7 @@ public:
     data_file_length(0), max_data_file_length(0),
     index_file_length(0), max_index_file_length(0), delete_length(0),
     auto_increment_value(0), records(0), deleted(0), mean_rec_length(0),
-    create_time(0), check_time(0), update_time(0), block_size(0),
+    create_time(0), check_time(0), update_time(0), block_size(8192),
     checksum(0), checksum_null(FALSE), mrr_length_per_rec(0)
   {}
 };
@@ -2926,6 +2936,13 @@ public:
   virtual ~Handler_share() {}
 };
 
+enum class Compare_keys : uint32_t
+{
+  Equal,
+  EqualButKeyPartLength,
+  EqualButComment,
+  NotEqual
+};
 
 /**
   The handler class is the interface for dynamically loadable
@@ -3061,6 +3078,7 @@ public:
   ulonglong rows_changed;
   /* One bigger than needed to avoid to test if key == MAX_KEY */
   ulonglong index_rows_read[MAX_KEY+1];
+  ha_copy_info copy_info;
 
 private:
   /* ANALYZE time tracker, if present */
@@ -3276,6 +3294,7 @@ public:
   {
     DBUG_ENTER("handler::ha_start_bulk_insert");
     estimation_rows_to_insert= rows;
+    bzero(&copy_info,sizeof(copy_info));
     start_bulk_insert(rows, flags);
     DBUG_VOID_RETURN;
   }
@@ -3347,6 +3366,13 @@ public:
   {
     rows_read= rows_changed= rows_tmp_read= 0;
     bzero(index_rows_read, sizeof(index_rows_read));
+    bzero(&copy_info, sizeof(copy_info));
+  }
+  virtual void reset_copy_info() {}
+  void ha_reset_copy_info()
+  {
+    bzero(&copy_info, sizeof(copy_info));
+    reset_copy_info();
   }
   virtual void change_table_ptr(TABLE *table_arg, TABLE_SHARE *share)
   {
@@ -4599,7 +4625,7 @@ private:
 
   /* Perform initialization for a direct update request */
 public:
-  int ha_direct_update_rows(ha_rows *update_rows);
+  int ha_direct_update_rows(ha_rows *update_rows, ha_rows *found_rows);
   virtual int direct_update_rows_init(List<Item> *update_fields)
   {
     return HA_ERR_WRONG_COMMAND;
@@ -4609,7 +4635,8 @@ private:
   {
     return HA_ERR_WRONG_COMMAND;
   }
-  virtual int direct_update_rows(ha_rows *update_rows __attribute__((unused)))
+  virtual int direct_update_rows(ha_rows *update_rows __attribute__((unused)),
+                                 ha_rows *found_rows __attribute__((unused)))
   {
     return HA_ERR_WRONG_COMMAND;
   }
@@ -4857,6 +4884,13 @@ public:
     return false;
   }
 
+  /* Used for ALTER TABLE.
+  Some engines can handle some differences in indexes by themself. */
+  virtual Compare_keys compare_key_parts(const Field &old_field,
+                                         const Column_definition &new_field,
+                                         const KEY_PART_INFO &old_part,
+                                         const KEY_PART_INFO &new_part) const;
+
 protected:
   Handler_share *get_ha_share_ptr();
   void set_ha_share_ptr(Handler_share *arg_ha_share);
@@ -5049,4 +5083,15 @@ void print_keydup_error(TABLE *table, KEY *key, myf errflag);
 
 int del_global_index_stat(THD *thd, TABLE* table, KEY* key_info);
 int del_global_table_stat(THD *thd, const  LEX_CSTRING *db, const LEX_CSTRING *table);
+#ifndef DBUG_OFF
+/** Converts XID to string.
+
+@param[out] buf output buffer
+@param[in] xid XID to convert
+
+@return pointer to converted string
+
+@note This does not need to be multi-byte safe or anything */
+char *xid_to_str(char *buf, const XID &xid);
+#endif // !DBUG_OFF
 #endif /* HANDLER_INCLUDED */

@@ -1,11 +1,11 @@
 /************* TabFmt C++ Program Source Code File (.CPP) **************/
 /* PROGRAM NAME: TABFMT                                                */
 /* -------------                                                       */
-/*  Version 3.9.2                                                      */
+/*  Version 3.9.3                                                      */
 /*                                                                     */
 /* COPYRIGHT:                                                          */
 /* ----------                                                          */
-/*  (C) Copyright to the author Olivier BERTRAND          2001 - 2017  */
+/*  (C) Copyright to the author Olivier BERTRAND          2001 - 2019  */
 /*                                                                     */
 /* WHAT THIS PROGRAM DOES:                                             */
 /* -----------------------                                             */
@@ -312,12 +312,13 @@ PQRYRES CSVColumns(PGLOBAL g, PCSZ dp, PTOS topt, bool info)
       } else if (*p == q) {
         if (phase == 0) {
           if (blank)
+          {
             if (++nerr > mxr) {
               sprintf(g->Message, MSG(MISPLACED_QUOTE), num_read);
               goto err;
             } else
               goto skip;
-
+          }
           n = 0;
           phase = digit = 1;
         } else if (phase == 1) {
@@ -342,12 +343,13 @@ PQRYRES CSVColumns(PGLOBAL g, PCSZ dp, PTOS topt, bool info)
 
       } else {
         if (phase == 2)
+        {
           if (++nerr > mxr) {
             sprintf(g->Message, MSG(MISPLACED_QUOTE), num_read);
             goto err;
           } else
             goto skip;
-
+        }
         // isdigit cannot be used here because of debug assert
         if (!strchr("0123456789", *p)) {
           if (!digit && *p == dechar)
@@ -363,12 +365,13 @@ PQRYRES CSVColumns(PGLOBAL g, PCSZ dp, PTOS topt, bool info)
       } // endif's *p
 
     if (phase == 1)
+    {
       if (++nerr > mxr) {
         sprintf(g->Message, MSG(UNBALANCE_QUOTE), num_read);
         goto err;
       } else
         goto skip;
-
+    }
     if (n) {
       len[i] = MY_MAX(len[i], n);
       type = (digit || n == 0 || (dec && n == 1)) ? TYPE_STRING
@@ -477,6 +480,7 @@ bool CSVDEF::DefineAM(PGLOBAL g, LPCSTR am, int poff)
   if (DOSDEF::DefineAM(g, "CSV", poff))
     return true;
 
+	Recfm = RECFM_CSV;
   GetCharCatInfo("Separator", ",", buf, sizeof(buf));
   Sep = (strlen(buf) == 2 && buf[0] == '\\' && buf[1] == 't') ? '\t' : *buf;
   Quoted = GetIntCatInfo("Quoted", -1);
@@ -741,6 +745,7 @@ bool TDBCSV::OpenDB(PGLOBAL g)
     PCSVCOL colp;
 
     if (!Fields)              // May have been set in TABFMT::OpenDB
+    {
       if (Mode != MODE_UPDATE && Mode != MODE_INSERT) {
         for (colp = (PCSVCOL)Columns; colp; colp = (PCSVCOL)colp->Next)
           if (!colp->IsSpecial() && !colp->IsVirtual())
@@ -753,7 +758,7 @@ bool TDBCSV::OpenDB(PGLOBAL g)
         for (cdp = tdp->GetCols(); cdp; cdp = cdp->GetNext())
           if (!cdp->IsSpecial() && !cdp->IsVirtual())
             Fields++;
-
+    }
     Offset = (int*)PlugSubAlloc(g, NULL, sizeof(int) * Fields);
     Fldlen = (int*)PlugSubAlloc(g, NULL, sizeof(int) * Fields);
 
@@ -774,6 +779,7 @@ bool TDBCSV::OpenDB(PGLOBAL g)
       } // endfor i
 
     if (Field)
+    {
       // Prepare writing fields
       if (Mode != MODE_UPDATE) {
         for (colp = (PCSVCOL)Columns; colp; colp = (PCSVCOL)colp->Next)
@@ -796,7 +802,7 @@ bool TDBCSV::OpenDB(PGLOBAL g)
             Fldlen[i] = len;
             Fldtyp[i] = IsTypeNum(cdp->GetType());
             } // endif cdp
-
+    }
     } // endif Use
 
   if (Header) {
@@ -1046,6 +1052,7 @@ bool TDBCSV::PrepareWriting(PGLOBAL g)
       strcat(To_Line, sep);
 
     if (Field[i])
+    {
       if (!strlen(Field[i])) {
         // Generally null fields are not quoted
         if (Quoted > 2)
@@ -1074,7 +1081,7 @@ bool TDBCSV::PrepareWriting(PGLOBAL g)
 
       else
         strcat(To_Line, Field[i]);
-
+    }
     } // endfor i
 
 #if defined(_DEBUG)
@@ -1134,6 +1141,7 @@ int TDBCSV::CheckWrite(PGLOBAL g)
         n += (Quoted > 2 ? 2 : 0);
       else if (strchr(Field[i], Sep) || (Qot && *Field[i] == Qot)
           || Quoted > 1 || (Quoted == 1 && !Fldtyp[i]))
+      {
         if (!Qot) {
           sprintf(g->Message, MSG(SEP_IN_FIELD), i + 1);
           return -1;
@@ -1146,7 +1154,7 @@ int TDBCSV::CheckWrite(PGLOBAL g)
 
           n += 2;        // Outside quotes
         } // endif
-
+      }
       if ((nlen += n) > maxlen) {
         strcpy(g->Message, MSG(LINE_TOO_LONG));
         return -1;

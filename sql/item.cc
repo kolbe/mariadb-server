@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2000, 2018, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2019, MariaDB Corporation
+   Copyright (c) 2010, 2020, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -2559,42 +2559,46 @@ bool Type_std_attributes::agg_item_set_converter(const DTCollation &coll,
 /**
   @brief
     Building clone for Item_func_or_sum
-    
+
   @param thd        thread handle
-  @param mem_root   part of the memory for the clone   
+  @param mem_root   part of the memory for the clone
 
   @details
-    This method gets copy of the current item and also 
-    build clones for its referencies. For the referencies 
-    build_copy is called again.
-      
-   @retval
-     clone of the item
-     0 if an error occured
-*/ 
+    This method first builds clones of the arguments. If it is successful with
+    buiding the clones then it constructs a copy of this Item_func_or_sum object
+    and attaches to it the built clones of the arguments.
+
+   @return clone of the item
+   @retval 0 on a failure
+*/
 
 Item* Item_func_or_sum::build_clone(THD *thd)
 {
-  Item_func_or_sum *copy= (Item_func_or_sum *) get_copy(thd);
-  if (unlikely(!copy))
-    return 0;
+  Item *copy_tmp_args[2]= {0,0};
+  Item **copy_args= copy_tmp_args;
   if (arg_count > 2)
   {
-    copy->args= 
-      (Item**) alloc_root(thd->mem_root, sizeof(Item*) * arg_count);
-    if (unlikely(!copy->args))
+    copy_args= static_cast<Item**>
+      (alloc_root(thd->mem_root, sizeof(Item*) * arg_count));
+    if (unlikely(!copy_args))
       return 0;
   }
-  else if (arg_count > 0)
-    copy->args= copy->tmp_arg;
-
-   
   for (uint i= 0; i < arg_count; i++)
   {
     Item *arg_clone= args[i]->build_clone(thd);
-    if (!arg_clone)
+    if (unlikely(!arg_clone))
       return 0;
-    copy->args[i]= arg_clone;
+    copy_args[i]= arg_clone;
+  }
+  Item_func_or_sum *copy= static_cast<Item_func_or_sum *>(get_copy(thd));
+  if (unlikely(!copy))
+    return 0;
+  if (arg_count > 2)
+    copy->args= copy_args;
+  else if (arg_count > 0)
+  {
+    copy->args= copy->tmp_arg;
+    memcpy(copy->args, copy_args, sizeof(Item *) * arg_count);
   }
   return copy;
 }
@@ -2870,7 +2874,7 @@ Item_sp::init_result_field(THD *thd, uint max_length, uint maybe_null,
       
    @retval
      clone of the item
-     0 if an error occured
+     0 if an error occurred
 */ 
 
 Item* Item_ref::build_clone(THD *thd)
@@ -3225,12 +3229,13 @@ bool Item_field::get_date(THD *thd, MYSQL_TIME *ltime,date_mode_t fuzzydate)
 
 bool Item_field::get_date_result(THD *thd, MYSQL_TIME *ltime, date_mode_t fuzzydate)
 {
-  if (result_field->is_null() || result_field->get_date(ltime,fuzzydate))
+  if ((null_value= result_field->is_null()) ||
+      result_field->get_date(ltime, fuzzydate))
   {
     bzero((char*) ltime,sizeof(*ltime));
-    return (null_value= 1);
+    return true;
   }
-  return (null_value= 0);
+  return false;
 }
 
 
@@ -7352,7 +7357,7 @@ Item *Item::build_pushable_cond(THD *thd,
     List<Item> equalities;
     Item *new_cond= NULL;
     if (((Item_equal *)this)->create_pushable_equalities(thd, &equalities,
-                                                         checker, arg) ||
+                                                         checker, arg, true) ||
         (equalities.elements == 0))
       return 0;
 
@@ -8229,7 +8234,7 @@ bool Item_ref::val_native(THD *thd, Native *to)
 longlong Item_ref::val_datetime_packed(THD *thd)
 {
   DBUG_ASSERT(fixed);
-  longlong tmp= (*ref)->val_datetime_packed(thd);
+  longlong tmp= (*ref)->val_datetime_packed_result(thd);
   null_value= (*ref)->null_value;
   return tmp;
 }
@@ -8238,7 +8243,7 @@ longlong Item_ref::val_datetime_packed(THD *thd)
 longlong Item_ref::val_time_packed(THD *thd)
 {
   DBUG_ASSERT(fixed);
-  longlong tmp= (*ref)->val_time_packed(thd);
+  longlong tmp= (*ref)->val_time_packed_result(thd);
   null_value= (*ref)->null_value;
   return tmp;
 }
@@ -9144,6 +9149,46 @@ bool Item_args::excl_dep_on_grouping_fields(st_select_lex *sel)
       return false;
   }
   return true;
+}
+
+
+double Item_direct_view_ref::val_result()
+{
+  double tmp=(*ref)->val_result();
+  null_value=(*ref)->null_value;
+  return tmp;
+}
+
+
+longlong Item_direct_view_ref::val_int_result()
+{
+  longlong tmp=(*ref)->val_int_result();
+  null_value=(*ref)->null_value;
+  return tmp;
+}
+
+
+String *Item_direct_view_ref::str_result(String* tmp)
+{
+  tmp=(*ref)->str_result(tmp);
+  null_value=(*ref)->null_value;
+  return tmp;
+}
+
+
+my_decimal *Item_direct_view_ref::val_decimal_result(my_decimal *val)
+{
+  my_decimal *tmp= (*ref)->val_decimal_result(val);
+  null_value=(*ref)->null_value;
+  return tmp;
+}
+
+
+bool Item_direct_view_ref::val_bool_result()
+{
+  bool tmp= (*ref)->val_bool_result();
+  null_value=(*ref)->null_value;
+  return tmp;
 }
 
 
@@ -10108,6 +10153,8 @@ bool Item_cache_str::cache_value()
     value_buff.copy(*value);
     value= &value_buff;
   }
+  else
+    value_buff.copy();
   return TRUE;
 }
 
@@ -10511,4 +10558,16 @@ void Item::register_in(THD *thd)
 {
   next= thd->free_list;
   thd->free_list= this;
+}
+
+
+bool Item::cleanup_excluding_immutables_processor (void *arg)
+{
+  if (!(get_extraction_flag() == IMMUTABLE_FL))
+    return cleanup_processor(arg);
+  else
+  {
+    clear_extraction_flag();
+    return false;
+  }
 }

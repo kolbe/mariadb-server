@@ -1785,6 +1785,10 @@ protected:
   {
     return (ulong) ::calc_daynr((uint) year, (uint) month, (uint) day);
   }
+  int weekday(bool sunday_first_day_of_week) const
+  {
+    return ::calc_weekday(daynr(), sunday_first_day_of_week);
+  }
   ulong dayofyear() const
   {
     return (ulong) (daynr() - ::calc_daynr(year, 1, 1) + 1);
@@ -2164,6 +2168,11 @@ public:
   {
     DBUG_ASSERT(is_valid_datetime_slow());
     return Temporal_with_date::daynr();
+  }
+  int weekday(bool sunday_first_day_of_week) const
+  {
+    DBUG_ASSERT(is_valid_datetime_slow());
+    return Temporal_with_date::weekday(sunday_first_day_of_week);
   }
   ulong dayofyear() const
   {
@@ -5138,6 +5147,7 @@ public:
   }
   bool type_can_have_auto_increment_attribute() const { return true; }
   uint32 max_display_length(const Item *item) const { return 25; }
+  uint32 Item_decimal_notation_int_digits(const Item *item) const { return 39; }
   uint32 calc_pack_length(uint32 length) const { return sizeof(float); }
   Item *create_typecast_item(THD *thd, Item *item,
                              const Type_cast_attributes &attr) const;

@@ -994,6 +994,16 @@ void *my_mmap(void *, size_t, int, int, int, my_off_t);
 int my_munmap(void *, size_t);
 #endif
 
+#ifdef _WIN32
+extern FILE* my_win_popen(const char*, const char*);
+extern int my_win_pclose(FILE*);
+#define my_popen(A,B) my_win_popen(A,B)
+#define my_pclose(A) my_win_pclose(A)
+#else
+#define my_popen(A,B) popen(A,B)
+#define my_pclose(A) pclose(A)
+#endif
+
 /* my_getpagesize */
 #ifdef HAVE_GETPAGESIZE
 #define my_getpagesize()        getpagesize()
@@ -1059,13 +1069,6 @@ extern void thd_increment_net_big_packet_count(void *thd, size_t length);
 
 #ifdef __WIN__
 extern my_bool have_tcpip;		/* Is set if tcpip is used */
-
-/* implemented in my_windac.c */
-
-int my_security_attr_create(SECURITY_ATTRIBUTES **psa, const char **perror,
-                            DWORD owner_rights, DWORD everybody_rights);
-
-void my_security_attr_free(SECURITY_ATTRIBUTES *sa);
 
 /* implemented in my_conio.c */
 char* my_cgets(char *string, size_t clen, size_t* plen);

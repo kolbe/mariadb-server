@@ -309,6 +309,11 @@ extern mysql_mutex_t LOCK_wsrep_SR_pool;
 extern mysql_mutex_t LOCK_wsrep_SR_store;
 extern mysql_mutex_t LOCK_wsrep_config_state;
 extern mysql_mutex_t LOCK_wsrep_group_commit;
+extern mysql_mutex_t LOCK_wsrep_joiner_monitor;
+extern mysql_mutex_t LOCK_wsrep_donor_monitor;
+extern mysql_cond_t  COND_wsrep_joiner_monitor;
+extern mysql_cond_t  COND_wsrep_donor_monitor;
+
 extern my_bool       wsrep_emulate_bin_log;
 extern int           wsrep_to_isolation;
 #ifdef GTID_SUPPORT
@@ -339,6 +344,8 @@ extern PSI_mutex_key key_LOCK_wsrep_SR_store;
 extern PSI_mutex_key key_LOCK_wsrep_global_seqno;
 extern PSI_mutex_key key_LOCK_wsrep_thd_queue;
 extern PSI_cond_key  key_COND_wsrep_thd_queue;
+extern PSI_mutex_key key_LOCK_wsrep_joiner_monitor;
+extern PSI_mutex_key key_LOCK_wsrep_donor_monitor;
 
 extern PSI_file_key key_file_wsrep_gra_log;
 
@@ -346,6 +353,8 @@ extern PSI_thread_key key_wsrep_sst_joiner;
 extern PSI_thread_key key_wsrep_sst_donor;
 extern PSI_thread_key key_wsrep_rollbacker;
 extern PSI_thread_key key_wsrep_applier;
+extern PSI_thread_key key_wsrep_sst_joiner_monitor;
+extern PSI_thread_key key_wsrep_sst_donor_monitor;
 #endif /* HAVE_PSI_INTERFACE */
 
 
@@ -396,11 +405,6 @@ extern void
 wsrep_handle_mdl_conflict(MDL_context *requestor_ctx,
                           MDL_ticket *ticket,
                           const MDL_key *key);
-IO_CACHE * get_trans_log(THD * thd);
-bool wsrep_trans_cache_is_empty(THD *thd);
-void thd_binlog_flush_pending_rows_event(THD *thd, bool stmt_end);
-void thd_binlog_rollback_stmt(THD * thd);
-void thd_binlog_trx_reset(THD * thd);
 
 enum wsrep_thread_type {
   WSREP_APPLIER_THREAD=1,

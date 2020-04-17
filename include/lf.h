@@ -17,7 +17,6 @@
 #define INCLUDE_LF_INCLUDED
 
 #include <my_atomic.h>
-#include <my_cpu.h>
 
 C_MODE_START
 
@@ -65,7 +64,6 @@ typedef struct {
 typedef struct {
   void * volatile pin[LF_PINBOX_PINS];
   LF_PINBOX *pinbox;
-  void  **stack_ends_here;
   void  *purgatory;
   uint32 purgatory_count;
   uint32 volatile link;

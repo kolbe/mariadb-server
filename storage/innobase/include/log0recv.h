@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1997, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, 2019, MariaDB Corporation.
+Copyright (c) 2017, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -33,7 +33,7 @@ Created 9/20/1997 Heikki Tuuri
 #include "log0log.h"
 #include "mtr0types.h"
 
-#include <forward_list>
+#include <deque>
 
 /** Is recv_writer_thread active? */
 extern bool	recv_writer_thread_active;
@@ -107,14 +107,19 @@ bool recv_sys_add_to_parsing_buf(const byte* log_block, lsn_t scanned_lsn);
 
 /** Parse log records from a buffer and optionally store them to a
 hash table to wait merging to file pages.
-@param[in]	checkpoint_lsn	the LSN of the latest checkpoint
-@param[in]	store		whether to store page operations
-@param[in]	apply		whether to apply the records
+@param[in]	checkpoint_lsn		the LSN of the latest checkpoint
+@param[in]	store			whether to store page operations
+@param[in]	available_memory	memory to read the redo logs
+@param[in]	apply			whether to apply the records
 @return whether MLOG_CHECKPOINT record was seen the first time,
 or corruption was noticed */
-bool recv_parse_log_recs(lsn_t checkpoint_lsn, store_t store, bool apply);
+bool recv_parse_log_recs(
+	lsn_t		checkpoint_lsn,
+	store_t*	store,
+	ulint		available_memory,
+	bool		apply);
 
-/** Moves the parsing buffer data left to the buffer start. */
+/** Moves the parsing buffer data left to the buffer start */
 void recv_sys_justify_left_parsing_buf();
 
 /** Report optimized DDL operation (without redo log),
@@ -173,7 +178,7 @@ struct recv_dblwr_t {
 	@retval NULL if no page was found */
 	const byte* find_page(ulint space_id, ulint page_no);
 
-	typedef std::forward_list<byte*, ut_allocator<byte*> > list;
+	typedef std::deque<byte*, ut_allocator<byte*> > list;
 
 	/** Recovered doublewrite buffer page frames */
 	list	pages;
@@ -331,10 +336,22 @@ times! */
 roll-forward */
 #define RECV_SCAN_SIZE		(4U << srv_page_size_shift)
 
-/** This many frames must be left free in the buffer pool when we scan
-the log and store the scanned log records in the buffer pool: we will
-use these free frames to read in pages when we start applying the
-log records to the database. */
-extern ulint	recv_n_pool_free_frames;
+/** This is a low level function for the recovery system
+to create a page which has buffered intialized redo log records.
+@param[in]	page_id	page to be created using redo logs
+@return whether the page creation successfully */
+buf_block_t* recv_recovery_create_page_low(const page_id_t page_id);
+
+/** Recovery system creates a page which has buffered intialized
+redo log records.
+@param[in]	page_id	page to be created using redo logs
+@return block which contains page was initialized */
+inline buf_block_t* recv_recovery_create_page(const page_id_t page_id)
+{
+  if (UNIV_LIKELY(!recv_recovery_on))
+    return NULL;
+
+  return recv_recovery_create_page_low(page_id);
+}
 
 #endif

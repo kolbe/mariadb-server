@@ -2,7 +2,7 @@
 
 Copyright (c) 1996, 2018, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
-Copyright (c) 2013, 2019, MariaDB Corporation.
+Copyright (c) 2013, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -37,6 +37,7 @@ Created 1/8/1996 Heikki Tuuri
 #include "lock0lock.h"
 #include "sync0sync.h"
 #include "row0row.h"
+#include "sql_string.h"
 #include <iostream>
 
 #define	DICT_HEAP_SIZE		100	/*!< initial memory heap size when
@@ -113,6 +114,14 @@ operator<<(
 	const table_name_t&	table_name)
 {
 	return(s << ut_get_name(NULL, table_name.m_name));
+}
+
+bool dict_col_t::same_encoding(uint16_t a, uint16_t b)
+{
+  if (const CHARSET_INFO *acs= get_charset(a, MYF(MY_WME)))
+    if (const CHARSET_INFO *bcs= get_charset(b, MYF(MY_WME)))
+      return Charset(acs).same_encoding(bcs);
+  return false;
 }
 
 /**********************************************************************//**
@@ -598,9 +607,10 @@ dict_mem_table_col_rename_low(
 				foreign->foreign_col_names,
 				foreign->n_fields, NULL, true, false,
 				NULL, NULL, NULL);
-			/* There must be an equivalent index in this case. */
-			ut_ad(new_index != NULL);
 
+			/* New index can be null if InnoDB already dropped
+			the foreign index when FOREIGN_KEY_CHECKS is
+			disabled */
 			foreign->foreign_index = new_index;
 
 		} else {
@@ -1271,7 +1281,7 @@ bool dict_table_t::deserialise_columns(const byte* metadata, ulint len)
 bool
 dict_index_t::vers_history_row(
 	const rec_t*		rec,
-	const ulint*		offsets)
+	const offset_t*		offsets)
 {
 	ut_ad(is_primary());
 
@@ -1302,8 +1312,8 @@ dict_index_t::vers_history_row(
 	bool error = false;
 	mem_heap_t* heap = NULL;
 	dict_index_t* clust_index = NULL;
-	ulint offsets_[REC_OFFS_NORMAL_SIZE];
-	ulint* offsets = offsets_;
+	offset_t offsets_[REC_OFFS_NORMAL_SIZE];
+	offset_t* offsets = offsets_;
 	rec_offs_init(offsets_);
 
 	mtr_t mtr;

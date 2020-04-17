@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2017, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2017, MariaDB Corporation
+   Copyright (c) 2009, 2020, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -397,8 +397,8 @@ handle_gtid_pos_auto_create_request(THD *thd, void *hton)
 
   /* Find the entry for the table to auto-create. */
   mysql_mutex_lock(&rpl_global_gtid_slave_state->LOCK_slave_state);
-  entry= (rpl_slave_state::gtid_pos_table *)
-    rpl_global_gtid_slave_state->gtid_pos_tables;
+  entry= rpl_global_gtid_slave_state->
+         gtid_pos_tables.load(std::memory_order_relaxed);
   while (entry)
   {
     if (entry->table_hton == hton &&
@@ -434,8 +434,8 @@ handle_gtid_pos_auto_create_request(THD *thd, void *hton)
 
   /* Now enable the entry for the auto-created table. */
   mysql_mutex_lock(&rpl_global_gtid_slave_state->LOCK_slave_state);
-  entry= (rpl_slave_state::gtid_pos_table *)
-    rpl_global_gtid_slave_state->gtid_pos_tables;
+  entry= rpl_global_gtid_slave_state->
+         gtid_pos_tables.load(std::memory_order_relaxed);
   while (entry)
   {
     if (entry->table_hton == hton &&
@@ -485,6 +485,9 @@ handle_slave_background(void *arg __attribute__((unused)))
   thd->store_globals();
   thd->security_ctx->skip_grants();
   thd->set_command(COM_DAEMON);
+#ifdef WITH_WSREP
+  thd->variables.wsrep_on= 0;
+#endif
 
   thd_proc_info(thd, "Loading slave GTID position from table");
   if (rpl_load_gtid_slave_state(thd))
@@ -1440,6 +1443,9 @@ void slave_prepare_for_shutdown()
   mysql_mutex_lock(&LOCK_active_mi);
   master_info_index->free_connections();
   mysql_mutex_unlock(&LOCK_active_mi);
+  // It's safe to destruct worker pool now when
+  // all driver threads are gone.
+  global_rpl_thread_pool.destroy();
   stop_slave_background_thread();
 }
 
@@ -3432,7 +3438,7 @@ static bool send_show_master_info_data(THD *thd, Master_info *mi, bool full,
     {
       protocol->store((uint32)    mi->rli.retried_trans);
       protocol->store((ulonglong) mi->rli.max_relay_log_size);
-      protocol->store((uint32)    mi->rli.executed_entries);
+      protocol->store(mi->rli.executed_entries);
       protocol->store((uint32)    mi->received_heartbeats);
       protocol->store((double)    mi->heartbeat_period, 3, &tmp);
       protocol->store(gtid_pos->ptr(), gtid_pos->length(), &my_charset_bin);
@@ -3953,19 +3959,26 @@ apply_event_and_update_pos_apply(Log_event* ev, THD* thd, rpl_group_info *rgi,
     exec_res= ev->apply_event(rgi);
 
 #ifdef WITH_WSREP
-  if (WSREP_ON)
-  {
-    mysql_mutex_lock(&thd->LOCK_thd_data);
-    if (exec_res &&
-        thd->wsrep_trx().state() != wsrep::transaction::s_executing)
-    {
-      WSREP_DEBUG("SQL apply failed, res %d conflict state: %s",
-                  exec_res, wsrep_thd_transaction_state_str(thd));
-      rli->abort_slave= 1;
-      rli->report(ERROR_LEVEL, ER_UNKNOWN_COM_ERROR, rgi->gtid_info(),
-                  "Node has dropped from cluster");
+  if (WSREP_ON) {
+    if (exec_res) {
+      mysql_mutex_lock(&thd->LOCK_thd_data);
+      switch(thd->wsrep_trx().state()) {
+      case wsrep::transaction::s_must_replay:
+        /* this transaction will be replayed,
+           so not raising slave error here */
+        WSREP_DEBUG("SQL apply failed for MUST_REPLAY, res %d", exec_res);
+	exec_res = 0;
+        break;
+      default:
+          WSREP_DEBUG("SQL apply failed, res %d conflict state: %s",
+                      exec_res, wsrep_thd_transaction_state_str(thd));
+          rli->abort_slave= 1;
+          rli->report(ERROR_LEVEL, ER_UNKNOWN_COM_ERROR, rgi->gtid_info(),
+                      "Node has dropped from cluster");
+          break;
+      }
+      mysql_mutex_unlock(&thd->LOCK_thd_data);
     }
-    mysql_mutex_unlock(&thd->LOCK_thd_data);
   }
 #endif
 
@@ -4524,7 +4537,7 @@ static int exec_relay_log_event(THD* thd, Relay_log_info* rli,
       }
     }
 
-    thread_safe_increment64(&rli->executed_entries);
+    rli->executed_entries++;
 #ifdef WITH_WSREP
     wsrep_after_statement(thd);
 #endif /* WITH_WSREP */
@@ -4727,6 +4740,9 @@ pthread_handler_t handle_slave_io(void *arg)
   }
 
 
+#ifdef WITH_WSREP
+  thd->variables.wsrep_on= 0;
+#endif
   if (DBUG_EVALUATE_IF("failed_slave_start", 1, 0)
       || repl_semisync_slave.slave_start(mi))
   {
@@ -6537,7 +6553,7 @@ static int queue_event(Master_info* mi,const char* buf, ulong event_len)
       error= ER_SLAVE_HEARTBEAT_FAILURE;
       error_msg.append(STRING_WITH_LEN("inconsistent heartbeat event content;"));
       error_msg.append(STRING_WITH_LEN("the event's data: log_file_name "));
-      error_msg.append(hb.get_log_ident(), (uint) strlen(hb.get_log_ident()));
+      error_msg.append(hb.get_log_ident(), (uint) hb.get_ident_len());
       error_msg.append(STRING_WITH_LEN(" log_pos "));
       error_msg.append_ulonglong(hb.log_pos);
       goto err;
@@ -6563,7 +6579,7 @@ static int queue_event(Master_info* mi,const char* buf, ulong event_len)
       error= ER_SLAVE_HEARTBEAT_FAILURE;
       error_msg.append(STRING_WITH_LEN("heartbeat is not compatible with local info;"));
       error_msg.append(STRING_WITH_LEN("the event's data: log_file_name "));
-      error_msg.append(hb.get_log_ident(), (uint) strlen(hb.get_log_ident()));
+      error_msg.append(hb.get_log_ident(), (uint) hb.get_ident_len());
       error_msg.append(STRING_WITH_LEN(" log_pos "));
       error_msg.append_ulonglong(hb.log_pos);
       goto err;
@@ -7922,7 +7938,39 @@ err:
     sql_print_error("Error reading relay log event: %s", errmsg);
   DBUG_RETURN(0);
 }
+#ifdef WITH_WSREP
+enum Log_event_type wsrep_peak_event(rpl_group_info *rgi, ulonglong* event_size)
+{
+  enum Log_event_type ev_type;
 
+  mysql_mutex_lock(&rgi->rli->data_lock);
+
+  unsigned long long event_pos= rgi->event_relay_log_pos;
+  unsigned long long orig_future_pos= rgi->future_event_relay_log_pos;
+  unsigned long long future_pos= rgi->future_event_relay_log_pos;
+
+  /* scan the log to read next event and we skip
+     annotate events. */
+  do {
+    my_b_seek(rgi->rli->cur_log, future_pos);
+    rgi->rli->event_relay_log_pos= future_pos;
+    rgi->event_relay_log_pos= future_pos;
+    Log_event* ev= next_event(rgi, event_size);
+    ev_type= (ev) ? ev->get_type_code() : UNKNOWN_EVENT;
+    delete ev;
+    future_pos+= *event_size;
+  } while (ev_type == ANNOTATE_ROWS_EVENT || ev_type == XID_EVENT);
+
+  /* scan the log back and re-set the positions to original values */
+  rgi->rli->event_relay_log_pos= event_pos;
+  rgi->event_relay_log_pos= event_pos;
+  my_b_seek(rgi->rli->cur_log, orig_future_pos);
+
+  mysql_mutex_unlock(&rgi->rli->data_lock);
+
+  return ev_type;
+}
+#endif /* WITH_WSREP */
 /*
   Rotate a relay log (this is used only by FLUSH LOGS; the automatic rotation
   because of size is simpler because when we do it we already have all relevant

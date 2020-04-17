@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 2012, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2015, 2019, MariaDB Corporation.
+Copyright (c) 2015, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -49,6 +49,8 @@ Created 2012-02-08 by Sunny Bains.
 #ifdef HAVE_MY_AES_H
 #include <my_aes.h>
 #endif
+
+using st_::span;
 
 /** The size of the buffer to use for IO.
 @param n physical page size
@@ -265,7 +267,7 @@ public:
 	bool remove(
 		const dict_index_t*	index,
 		page_zip_des_t*		page_zip,
-		ulint*			offsets) UNIV_NOTHROW
+		offset_t*		offsets) UNIV_NOTHROW
 	{
 		/* We can't end up with an empty page unless it is root. */
 		if (page_get_n_recs(m_cur.block->frame) <= 1) {
@@ -466,17 +468,12 @@ protected:
 		UT_DELETE_ARRAY(m_xdes);
 		m_xdes = NULL;
 
-		ulint		state;
-		const xdes_t*	xdesc = page + XDES_ARR_OFFSET;
-
-		state = mach_read_ulint(xdesc + XDES_STATE, MLOG_4BYTES);
-
-		if (state != XDES_FREE) {
+		if (mach_read_from_4(XDES_ARR_OFFSET + XDES_STATE + page)
+		    != XDES_FREE) {
 			const ulint physical_size = m_zip_size
 				? m_zip_size : srv_page_size;
 
-			m_xdes = UT_NEW_ARRAY_NOKEY(xdes_t,
-						    physical_size);
+			m_xdes = UT_NEW_ARRAY_NOKEY(xdes_t, physical_size);
 
 			/* Trigger OOM */
 			DBUG_EXECUTE_IF(
@@ -856,7 +853,7 @@ private:
 	@return DB_SUCCESS or error code */
 	dberr_t	adjust_cluster_index_blob_column(
 		rec_t*		rec,
-		const ulint*	offsets,
+		const offset_t*	offsets,
 		ulint		i) UNIV_NOTHROW;
 
 	/** Adjusts the BLOB reference in the clustered index row for all
@@ -866,7 +863,7 @@ private:
 	@return DB_SUCCESS or error code */
 	dberr_t	adjust_cluster_index_blob_columns(
 		rec_t*		rec,
-		const ulint*	offsets) UNIV_NOTHROW;
+		const offset_t*	offsets) UNIV_NOTHROW;
 
 	/** In the clustered index, adjist the BLOB pointers as needed.
 	Also update the BLOB reference, write the new space id.
@@ -875,7 +872,7 @@ private:
 	@return DB_SUCCESS or error code */
 	dberr_t	adjust_cluster_index_blob_ref(
 		rec_t*		rec,
-		const ulint*	offsets) UNIV_NOTHROW;
+		const offset_t*	offsets) UNIV_NOTHROW;
 
 	/** Purge delete-marked records, only if it is possible to do
 	so without re-organising the B+tree.
@@ -888,7 +885,7 @@ private:
 	@return DB_SUCCESS or error code. */
 	dberr_t	adjust_cluster_record(
 		rec_t*			rec,
-		const ulint*		offsets) UNIV_NOTHROW;
+		const offset_t*		offsets) UNIV_NOTHROW;
 
 	/** Find an index with the matching id.
 	@return row_index_t* instance or 0 */
@@ -922,10 +919,10 @@ private:
 	RecIterator		m_rec_iter;
 
 	/** Record offset */
-	ulint			m_offsets_[REC_OFFS_NORMAL_SIZE];
+	offset_t		m_offsets_[REC_OFFS_NORMAL_SIZE];
 
 	/** Pointer to m_offsets_ */
-	ulint*			m_offsets;
+	offset_t*		m_offsets;
 
 	/** Memory heap for the record offsets */
 	mem_heap_t*		m_heap;
@@ -1162,60 +1159,82 @@ row_import::match_table_columns(
 
 			if (cfg_col->prtype != col->prtype) {
 				ib_errf(thd,
-					 IB_LOG_LEVEL_ERROR,
-					 ER_TABLE_SCHEMA_MISMATCH,
-					 "Column %s precise type mismatch.",
-					 col_name);
+					IB_LOG_LEVEL_ERROR,
+					ER_TABLE_SCHEMA_MISMATCH,
+					"Column %s precise type mismatch,"
+					" it's 0X%X in the table and 0X%X"
+					" in the tablespace meta file",
+					col_name, col->prtype, cfg_col->prtype);
 				err = DB_ERROR;
 			}
 
 			if (cfg_col->mtype != col->mtype) {
 				ib_errf(thd,
-					 IB_LOG_LEVEL_ERROR,
-					 ER_TABLE_SCHEMA_MISMATCH,
-					 "Column %s main type mismatch.",
-					 col_name);
+					IB_LOG_LEVEL_ERROR,
+					ER_TABLE_SCHEMA_MISMATCH,
+					"Column %s main type mismatch,"
+					" it's 0X%X in the table and 0X%X"
+					" in the tablespace meta file",
+					col_name, col->mtype, cfg_col->mtype);
 				err = DB_ERROR;
 			}
 
 			if (cfg_col->len != col->len) {
 				ib_errf(thd,
-					 IB_LOG_LEVEL_ERROR,
-					 ER_TABLE_SCHEMA_MISMATCH,
-					 "Column %s length mismatch.",
-					 col_name);
+					IB_LOG_LEVEL_ERROR,
+					ER_TABLE_SCHEMA_MISMATCH,
+					"Column %s length mismatch,"
+					" it's %u in the table and %u"
+					" in the tablespace meta file",
+					col_name, col->len, cfg_col->len);
 				err = DB_ERROR;
 			}
 
 			if (cfg_col->mbminlen != col->mbminlen
 			    || cfg_col->mbmaxlen != col->mbmaxlen) {
 				ib_errf(thd,
-					 IB_LOG_LEVEL_ERROR,
-					 ER_TABLE_SCHEMA_MISMATCH,
-					 "Column %s multi-byte len mismatch.",
-					 col_name);
+					IB_LOG_LEVEL_ERROR,
+					ER_TABLE_SCHEMA_MISMATCH,
+					"Column %s multi-byte len mismatch,"
+					" it's %u-%u in the table and %u-%u"
+					" in the tablespace meta file",
+					col_name, col->mbminlen, col->mbmaxlen,
+					cfg_col->mbminlen, cfg_col->mbmaxlen);
 				err = DB_ERROR;
 			}
 
 			if (cfg_col->ind != col->ind) {
+				ib_errf(thd,
+					IB_LOG_LEVEL_ERROR,
+					ER_TABLE_SCHEMA_MISMATCH,
+					"Column %s position mismatch,"
+					" it's %u in the table and %u"
+					" in the tablespace meta file",
+					col_name, col->ind, cfg_col->ind);
 				err = DB_ERROR;
 			}
 
 			if (cfg_col->ord_part != col->ord_part) {
 				ib_errf(thd,
-					 IB_LOG_LEVEL_ERROR,
-					 ER_TABLE_SCHEMA_MISMATCH,
-					 "Column %s ordering mismatch.",
-					 col_name);
+					IB_LOG_LEVEL_ERROR,
+					ER_TABLE_SCHEMA_MISMATCH,
+					"Column %s ordering mismatch,"
+					" it's %u in the table and %u"
+					" in the tablespace meta file",
+					col_name, col->ord_part,
+					cfg_col->ord_part);
 				err = DB_ERROR;
 			}
 
 			if (cfg_col->max_prefix != col->max_prefix) {
 				ib_errf(thd,
-					 IB_LOG_LEVEL_ERROR,
-					 ER_TABLE_SCHEMA_MISMATCH,
-					 "Column %s max prefix mismatch.",
-					 col_name);
+					IB_LOG_LEVEL_ERROR,
+					ER_TABLE_SCHEMA_MISMATCH,
+					"Column %s max prefix mismatch"
+					" it's %u in the table and %u"
+					" in the tablespace meta file",
+					col_name, col->max_prefix,
+					cfg_col->max_prefix);
 				err = DB_ERROR;
 			}
 		}
@@ -1514,13 +1533,70 @@ IndexPurge::next() UNIV_NOTHROW
 	mtr_set_log_mode(&m_mtr, MTR_LOG_NO_REDO);
 
 	btr_pcur_restore_position(BTR_MODIFY_LEAF, &m_pcur, &m_mtr);
+	/* The following is based on btr_pcur_move_to_next_user_rec(). */
+	m_pcur.old_stored = false;
+	ut_ad(m_pcur.latch_mode == BTR_MODIFY_LEAF);
+	do {
+		if (btr_pcur_is_after_last_on_page(&m_pcur)) {
+			if (btr_pcur_is_after_last_in_tree(&m_pcur)) {
+				return DB_END_OF_INDEX;
+			}
 
-	if (!btr_pcur_move_to_next_user_rec(&m_pcur, &m_mtr)) {
+			buf_block_t* block = btr_pcur_get_block(&m_pcur);
+			uint32_t next_page = btr_page_get_next(block->frame);
 
-		return(DB_END_OF_INDEX);
-	}
+			/* MDEV-13542 FIXME: Make these checks part of
+			btr_pcur_move_to_next_page(), and introduce a
+			return status that will be checked in all callers! */
+			switch (next_page) {
+			default:
+				if (next_page != block->page.id.page_no()) {
+					break;
+				}
+				/* MDEV-20931 FIXME: Check that
+				next_page is within the tablespace
+				bounds! Also check that it is not a
+				change buffer bitmap page. */
+				/* fall through */
+			case 0:
+			case 1:
+			case FIL_NULL:
+				return DB_CORRUPTION;
+			}
 
-	return(DB_SUCCESS);
+			dict_index_t* index = m_pcur.btr_cur.index;
+			buf_block_t* next_block = btr_block_get(
+				page_id_t(block->page.id.space(), next_page),
+				block->zip_size(), BTR_MODIFY_LEAF, index,
+				&m_mtr);
+
+			if (UNIV_UNLIKELY(!next_block
+					  || !fil_page_index_page_check(
+						  next_block->frame)
+					  || !!dict_index_is_spatial(index)
+					  != (fil_page_get_type(
+						      next_block->frame)
+					      == FIL_PAGE_RTREE)
+					  || page_is_comp(next_block->frame)
+					  != page_is_comp(block->frame)
+					  || btr_page_get_prev(
+						  next_block->frame)
+					  != block->page.id.page_no())) {
+				return DB_CORRUPTION;
+			}
+
+			btr_leaf_page_release(block, BTR_MODIFY_LEAF, &m_mtr);
+
+			page_cur_set_before_first(next_block,
+						  &m_pcur.btr_cur.page_cur);
+
+			ut_d(page_check_dir(next_block->frame));
+		} else {
+			btr_pcur_move_to_next_on_page(&m_pcur);
+		}
+	} while (!btr_pcur_is_on_user_rec(&m_pcur));
+
+	return DB_SUCCESS;
 }
 
 /**
@@ -1573,7 +1649,7 @@ inline
 dberr_t
 PageConverter::adjust_cluster_index_blob_column(
 	rec_t*		rec,
-	const ulint*	offsets,
+	const offset_t*	offsets,
 	ulint		i) UNIV_NOTHROW
 {
 	ulint		len;
@@ -1617,7 +1693,7 @@ inline
 dberr_t
 PageConverter::adjust_cluster_index_blob_columns(
 	rec_t*		rec,
-	const ulint*	offsets) UNIV_NOTHROW
+	const offset_t*	offsets) UNIV_NOTHROW
 {
 	ut_ad(rec_offs_any_extern(offsets));
 
@@ -1650,7 +1726,7 @@ inline
 dberr_t
 PageConverter::adjust_cluster_index_blob_ref(
 	rec_t*		rec,
-	const ulint*	offsets) UNIV_NOTHROW
+	const offset_t*	offsets) UNIV_NOTHROW
 {
 	if (rec_offs_any_extern(offsets)) {
 		dberr_t	err;
@@ -1693,7 +1769,7 @@ inline
 dberr_t
 PageConverter::adjust_cluster_record(
 	rec_t*			rec,
-	const ulint*		offsets) UNIV_NOTHROW
+	const offset_t*		offsets) UNIV_NOTHROW
 {
 	dberr_t	err;
 
@@ -1816,6 +1892,23 @@ PageConverter::update_index_page(
 	then ignore the error. */
 	if (m_cfg->m_missing && (m_index == 0 || m_index->m_srv_index == 0)) {
 		return(DB_SUCCESS);
+	}
+
+	if (m_index && block->page.id.page_no() == m_index->m_page_no) {
+		byte *b = FIL_PAGE_DATA + PAGE_BTR_SEG_LEAF + FSEG_HDR_SPACE
+			+ page;
+		mach_write_to_4(b, block->page.id.space());
+
+		memcpy(FIL_PAGE_DATA + PAGE_BTR_SEG_TOP + FSEG_HDR_SPACE
+		       + page, b, 4);
+		if (UNIV_LIKELY_NULL(block->page.zip.data)) {
+			memcpy(&block->page.zip.data[FIL_PAGE_DATA
+						     + PAGE_BTR_SEG_TOP
+						     + FSEG_HDR_SPACE], b, 4);
+			memcpy(&block->page.zip.data[FIL_PAGE_DATA
+						     + PAGE_BTR_SEG_LEAF
+						     + FSEG_HDR_SPACE], b, 4);
+		}
 	}
 
 #ifdef UNIV_ZIP_DEBUG
@@ -3363,7 +3456,8 @@ fil_iterate(
 			byte*	src = readptr + i * size;
 			const ulint page_no = page_get_page_no(src);
 			if (!page_no && block->page.id.page_no()) {
-				if (!buf_page_is_zeroes(src, size)) {
+				if (!buf_is_zeroes(span<const byte>(src,
+								    size))) {
 					goto page_corrupted;
 				}
 				/* Proceed to the next page,

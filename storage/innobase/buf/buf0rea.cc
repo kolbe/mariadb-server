@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1995, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2015, 2019, MariaDB Corporation.
+Copyright (c) 2015, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -785,8 +785,8 @@ buf_read_ibuf_merge_pages(
 #endif
 
 	for (ulint i = 0; i < n_stored; i++) {
-		fil_space_t* s = fil_space_acquire_for_io(space_ids[i]);
-		if (!s) {
+		fil_space_t* space = fil_space_acquire_silent(space_ids[i]);
+		if (!space) {
 tablespace_deleted:
 			/* The tablespace was not found: remove all
 			entries for it */
@@ -798,8 +798,18 @@ tablespace_deleted:
 			continue;
 		}
 
-		const ulint zip_size = s->zip_size();
-		s->release_for_io();
+		if (UNIV_UNLIKELY(page_nos[i] >= space->size)) {
+			do {
+				ibuf_delete_recs(page_id_t(space_ids[i],
+							   page_nos[i]));
+			} while (++i < n_stored
+				 && space_ids[i - 1] == space_ids[i]
+				 && page_nos[i] >= space->size);
+			i--;
+next:
+			space->release();
+			continue;
+		}
 
 		const page_id_t	page_id(space_ids[i], page_nos[i]);
 
@@ -815,7 +825,8 @@ tablespace_deleted:
 		buf_read_page_low(&err,
 				  sync && (i + 1 == n_stored),
 				  0,
-				  BUF_READ_ANY_PAGE, page_id, zip_size,
+				  BUF_READ_ANY_PAGE, page_id,
+				  space->zip_size(),
 				  true, true /* ignore_missing_space */);
 
 		switch(err) {
@@ -823,15 +834,20 @@ tablespace_deleted:
 		case DB_ERROR:
 			break;
 		case DB_TABLESPACE_DELETED:
+			space->release();
 			goto tablespace_deleted;
 		case DB_PAGE_CORRUPTED:
 		case DB_DECRYPTION_FAILED:
-			ib::error() << "Failed to read or decrypt " << page_id
-				<< " for change buffer merge";
+			ib::error() << "Failed to read or decrypt page "
+				    << page_nos[i]
+				    << " of '" << space->chain.start->name
+				    << "' for change buffer merge";
 			break;
 		default:
 			ut_error;
 		}
+
+		goto next;
 	}
 
 	os_aio_simulated_wake_handler_threads();
@@ -875,8 +891,12 @@ buf_read_recv_pages(
 		ulint			count = 0;
 
 		buf_pool = buf_pool_get(cur_page_id);
-		while (buf_pool->n_pend_reads >= recv_n_pool_free_frames / 2) {
+		ulint limit = 0;
+		for (ulint j = 0; j < buf_pool->n_chunks; j++) {
+			limit += buf_pool->chunks[j].size / 2;
+		}
 
+		while (buf_pool->n_pend_reads >= limit) {
 			os_aio_simulated_wake_handler_threads();
 			os_thread_sleep(10000);
 

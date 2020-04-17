@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2000, 2019, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2019, MariaDB
+   Copyright (c) 2010, 2020, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -54,7 +54,7 @@
 #include "sql_audit.h"
 #include "sql_sequence.h"
 #include "tztime.h"
-
+#include <algorithm>
 
 #ifdef __WIN__
 #include <io.h>
@@ -3022,32 +3022,35 @@ CHARSET_INFO* get_sql_field_charset(Column_definition *sql_field,
 
 void promote_first_timestamp_column(List<Create_field> *column_definitions)
 {
-  List_iterator_fast<Create_field> it(*column_definitions);
-  Create_field *column_definition;
-
-  while ((column_definition= it++) != NULL)
+  for (Create_field &column_definition : *column_definitions)
   {
-    if (column_definition->is_timestamp_type() ||    // TIMESTAMP
-        column_definition->unireg_check == Field::TIMESTAMP_OLD_FIELD) // Legacy
+    if (column_definition.is_timestamp_type() ||    // TIMESTAMP
+        column_definition.unireg_check == Field::TIMESTAMP_OLD_FIELD) // Legacy
     {
-      DBUG_PRINT("info", ("field-ptr:%p", column_definition->field));
-      if ((column_definition->flags & NOT_NULL_FLAG) != 0 && // NOT NULL,
-          column_definition->default_value == NULL &&   // no constant default,
-          column_definition->unireg_check == Field::NONE && // no function default
-          column_definition->vcol_info == NULL &&
-          column_definition->period == NULL &&
-          !(column_definition->flags & VERS_SYSTEM_FIELD)) // column isn't generated
+      DBUG_PRINT("info", ("field-ptr:%p", column_definition.field));
+      if ((column_definition.flags & NOT_NULL_FLAG) != 0 && // NOT NULL,
+          column_definition.default_value == NULL &&   // no constant default,
+          column_definition.unireg_check == Field::NONE && // no function default
+          column_definition.vcol_info == NULL &&
+          column_definition.period == NULL &&
+          !(column_definition.flags & VERS_SYSTEM_FIELD)) // column isn't generated
       {
         DBUG_PRINT("info", ("First TIMESTAMP column '%s' was promoted to "
                             "DEFAULT CURRENT_TIMESTAMP ON UPDATE "
                             "CURRENT_TIMESTAMP",
-                            column_definition->field_name.str
+                            column_definition.field_name.str
                             ));
-        column_definition->unireg_check= Field::TIMESTAMP_DNUN_FIELD;
+        column_definition.unireg_check= Field::TIMESTAMP_DNUN_FIELD;
       }
       return;
     }
   }
+}
+
+static bool key_cmp(const Key_part_spec &a, const Key_part_spec &b)
+{
+  return a.length == b.length &&
+         !lex_string_cmp(system_charset_info, &a.field_name, &b.field_name);
 }
 
 /**
@@ -3058,8 +3061,8 @@ void promote_first_timestamp_column(List<Create_field> *column_definitions)
   @param key_info         Key meta-data info.
   @param key_list         List of existing keys.
 */
-static void check_duplicate_key(THD *thd, Key *key, KEY *key_info,
-                                List<Key> *key_list)
+static void check_duplicate_key(THD *thd, const Key *key, const KEY *key_info,
+                                const List<Key> *key_list)
 {
   /*
     We only check for duplicate indexes if it is requested and the
@@ -3071,56 +3074,28 @@ static void check_duplicate_key(THD *thd, Key *key, KEY *key_info,
   if (!key->key_create_info.check_for_duplicate_indexes || key->generated)
     return;
 
-  List_iterator_fast<Key> key_list_iterator(*key_list);
-  List_iterator_fast<Key_part_spec> key_column_iterator(key->columns);
-  Key *k;
-
-  while ((k= key_list_iterator++))
+  for (const Key &k : *key_list)
   {
     // Looking for a similar key...
 
-    if (k == key)
+    if (&k == key)
       break;
 
-    if (k->generated ||
-        (key->type != k->type) ||
-        (key->key_create_info.algorithm != k->key_create_info.algorithm) ||
-        (key->columns.elements != k->columns.elements))
+    if (k.generated ||
+        (key->type != k.type) ||
+        (key->key_create_info.algorithm != k.key_create_info.algorithm) ||
+        (key->columns.elements != k.columns.elements))
     {
       // Keys are different.
       continue;
     }
 
-    /*
-      Keys 'key' and 'k' might be identical.
-      Check that the keys have identical columns in the same order.
-    */
-
-    List_iterator_fast<Key_part_spec> k_column_iterator(k->columns);
-    uint i;
-    key_column_iterator.rewind();
-
-    for (i= 0; i < key->columns.elements; ++i)
+    if (std::equal(key->columns.begin(), key->columns.end(), k.columns.begin(),
+                   key_cmp))
     {
-      Key_part_spec *c1= key_column_iterator++;
-      Key_part_spec *c2= k_column_iterator++;
-
-      DBUG_ASSERT(c1 && c2);
-
-      if (lex_string_cmp(system_charset_info,
-                         &c1->field_name, &c2->field_name) ||
-          (c1->length != c2->length))
-        break;
-    }
-
-    // Report a warning if we have two identical keys.
-
-    if (i == key->columns.elements)
-    {
-      push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE,
-                          ER_DUP_INDEX, ER_THD(thd, ER_DUP_INDEX),
-                          key_info->name.str);
-      break;
+      push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE, ER_DUP_INDEX,
+                          ER_THD(thd, ER_DUP_INDEX), key_info->name.str);
+      return;
     }
   }
 }
@@ -4330,18 +4305,41 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
         continue;
 
       {
-        /* Check that there's no repeating constraint names. */
+        /* Check that there's no repeating table CHECK constraint names. */
         List_iterator_fast<Virtual_column_info>
           dup_it(alter_info->check_constraint_list);
-        Virtual_column_info *dup_check;
+        const Virtual_column_info *dup_check;
         while ((dup_check= dup_it++) && dup_check != check)
         {
+          if (!dup_check->name.length || dup_check->automatic_name)
+            continue;
           if (!lex_string_cmp(system_charset_info,
                               &check->name, &dup_check->name))
           {
             my_error(ER_DUP_CONSTRAINT_NAME, MYF(0), "CHECK", check->name.str);
             DBUG_RETURN(TRUE);
           }
+        }
+      }
+
+      /* Check that there's no repeating key constraint names. */
+      List_iterator_fast<Key> key_it(alter_info->key_list);
+      while (const Key *key= key_it++)
+      {
+        /*
+          Not all keys considered to be the CONSTRAINT
+          Noly Primary Key UNIQUE and Foreign keys.
+        */
+        if (key->type != Key::PRIMARY && key->type != Key::UNIQUE &&
+            key->type != Key::FOREIGN_KEY)
+          continue;
+
+        if (check->name.length == key->name.length &&
+            my_strcasecmp(system_charset_info,
+              check->name.str, key->name.str) == 0)
+        {
+          my_error(ER_DUP_CONSTRAINT_NAME, MYF(0), "CHECK", check->name.str);
+          DBUG_RETURN(TRUE);
         }
       }
 
@@ -4396,8 +4394,11 @@ bool validate_comment_length(THD *thd, LEX_CSTRING *comment, size_t max_len,
                              uint err_code, const char *name)
 {
   DBUG_ENTER("validate_comment_length");
-  size_t tmp_len= my_charpos(system_charset_info, comment->str,
-                           comment->str + comment->length, max_len);
+  if (comment->length == 0)
+    DBUG_RETURN(false);
+
+  size_t tmp_len=
+      Well_formed_prefix(system_charset_info, *comment, max_len).length();
   if (tmp_len < comment->length)
   {
     if (thd->is_strict_mode())
@@ -6583,38 +6584,68 @@ static int compare_uint(const uint *s, const uint *t)
   return (*s < *t) ? -1 : ((*s > *t) ? 1 : 0);
 }
 
-enum class Compare_keys : uint32_t
-{
-  Equal,
-  EqualButKeyPartLength,
-  EqualButComment,
-  NotEqual
-};
+static Compare_keys merge(Compare_keys current, Compare_keys add) {
+  if (current == Compare_keys::Equal)
+    return add;
+
+  if (add == Compare_keys::Equal)
+    return current;
+
+  if (current == add)
+    return current;
+
+  if (current == Compare_keys::EqualButComment) {
+    return Compare_keys::NotEqual;
+  }
+
+  if (current == Compare_keys::EqualButKeyPartLength) {
+    if (add == Compare_keys::EqualButComment)
+      return Compare_keys::NotEqual;
+    DBUG_ASSERT(add == Compare_keys::NotEqual);
+    return Compare_keys::NotEqual;
+  }
+
+  DBUG_ASSERT(current == Compare_keys::NotEqual);
+  return current;
+}
 
 Compare_keys compare_keys_but_name(const KEY *table_key, const KEY *new_key,
                                    Alter_info *alter_info, const TABLE *table,
                                    const KEY *const new_pk,
                                    const KEY *const old_pk)
 {
-  Compare_keys result= Compare_keys::Equal;
+  if (table_key->algorithm != new_key->algorithm)
+    return Compare_keys::NotEqual;
 
-  if ((table_key->algorithm != new_key->algorithm) ||
-      ((table_key->flags & HA_KEYFLAG_MASK) !=
-       (new_key->flags & HA_KEYFLAG_MASK)) ||
-      (table_key->user_defined_key_parts != new_key->user_defined_key_parts))
+  if ((table_key->flags & HA_KEYFLAG_MASK) !=
+      (new_key->flags & HA_KEYFLAG_MASK))
+    return Compare_keys::NotEqual;
+
+  if (table_key->user_defined_key_parts != new_key->user_defined_key_parts)
     return Compare_keys::NotEqual;
 
   if (table_key->block_size != new_key->block_size)
+    return Compare_keys::NotEqual;
+
+  /*
+  Rebuild the index if following condition get satisfied:
+
+  (i) Old table doesn't have primary key, new table has it and vice-versa
+  (ii) Primary key changed to another existing index
+  */
+  if ((new_key == new_pk) != (table_key == old_pk))
     return Compare_keys::NotEqual;
 
   if (engine_options_differ(table_key->option_struct, new_key->option_struct,
                             table->file->ht->index_options))
     return Compare_keys::NotEqual;
 
-  const KEY_PART_INFO *end=
-      table_key->key_part + table_key->user_defined_key_parts;
-  for (const KEY_PART_INFO *key_part= table_key->key_part,
-                           *new_part= new_key->key_part;
+  Compare_keys result= Compare_keys::Equal;
+
+  for (const KEY_PART_INFO *
+           key_part= table_key->key_part,
+          *new_part= new_key->key_part,
+          *end= table_key->key_part + table_key->user_defined_key_parts;
        key_part < end; key_part++, new_part++)
   {
     /*
@@ -6622,61 +6653,23 @@ Compare_keys compare_keys_but_name(const KEY *table_key, const KEY *new_key,
       object with adjusted length. So below we have to check field
       indexes instead of simply comparing pointers to Field objects.
     */
-    Create_field *new_field= alter_info->create_list.elem(new_part->fieldnr);
-    if (!new_field->field ||
-        new_field->field->field_index != key_part->fieldnr - 1)
+    const Create_field &new_field=
+        *alter_info->create_list.elem(new_part->fieldnr);
+
+    if (!new_field.field ||
+        new_field.field->field_index != key_part->fieldnr - 1)
+    {
       return Compare_keys::NotEqual;
-
-    /*
-      If there is a change in index length due to column expansion
-      like varchar(X) changed to varchar(X + N) and has a compatible
-      packed data representation, we mark it for fast/INPLACE change
-      in index definition. InnoDB supports INPLACE for this cases
-
-      Key definition has changed if we are using a different field or
-      if the user key part length is different.
-    */
-    const Field *old_field= table->field[key_part->fieldnr - 1];
-
-    bool is_equal= key_part->field->is_equal(*new_field);
-    /* TODO: below is an InnoDB specific code which should be moved to InnoDB */
-    if (!is_equal)
-    {
-      if (!key_part->field->can_be_converted_by_engine(*new_field))
-        return Compare_keys::NotEqual;
-
-      if (!Charset(old_field->charset())
-               .eq_collation_specific_names(new_field->charset))
-        return Compare_keys::NotEqual;
     }
 
-    if (key_part->length != new_part->length)
-    {
-      if (key_part->length != old_field->field_length ||
-          key_part->length >= new_part->length || is_equal)
-      {
-        return Compare_keys::NotEqual;
-      }
-      result= Compare_keys::EqualButKeyPartLength;
-    }
+    auto compare= table->file->compare_key_parts(
+        *table->field[key_part->fieldnr - 1], new_field, *key_part, *new_part);
+    result= merge(result, compare);
   }
-
-  /*
-  Rebuild the index if following condition get satisfied:
-
-  (i) Old table doesn't have primary key, new table has it and vice-versa
-  (ii) Primary key changed to another existing index
-*/
-  if ((new_key == new_pk) != (table_key == old_pk))
-    return Compare_keys::NotEqual;
 
   /* Check that key comment is not changed. */
   if (cmp(table_key->comment, new_key->comment) != 0)
-  {
-    if (result != Compare_keys::Equal)
-      return Compare_keys::NotEqual;
-    result= Compare_keys::EqualButComment;
-  }
+    result= merge(result, Compare_keys::EqualButComment);
 
   return result;
 }
@@ -8486,8 +8479,8 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
 	  key_part_length= 0;			// Use whole field
       }
       key_part_length /= kfield->charset()->mbmaxlen;
-      key_parts.push_back(new Key_part_spec(&cfield->field_name,
-					    key_part_length),
+      key_parts.push_back(new (thd->mem_root) Key_part_spec(
+                            &cfield->field_name, key_part_length),
                           thd->mem_root);
     }
     if (table->s->tmp_table == NO_TMP_TABLE)
@@ -8553,7 +8546,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
       tmp_name.str= key_name;
       tmp_name.length= strlen(key_name);
       /* We dont need LONG_UNIQUE_HASH_FIELD flag because it will be autogenerated */
-      key= new Key(key_type, &tmp_name, &key_create_info,
+      key= new (thd->mem_root) Key(key_type, &tmp_name, &key_create_info,
                    MY_TEST(key_info->flags & HA_GENERATED_KEY),
                    &key_parts, key_info->option_list, DDL_options());
       new_key_list.push_back(key, thd->mem_root);
@@ -8633,26 +8626,37 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
         }
       }
 
+      // NB: `check` is TABLE resident, we must keep it intact.
+      if (keep)
+      {
+        check= check->clone(thd);
+        if (!check)
+        {
+          my_error(ER_OUT_OF_RESOURCES, MYF(0));
+          goto err;
+        }
+      }
+
       if (share->period.constr_name.streq(check->name.str))
       {
-        if (!drop_period && !keep)
+        if (drop_period)
+        {
+          keep= false;
+        }
+        else if(!keep)
         {
           my_error(ER_PERIOD_CONSTRAINT_DROP, MYF(0), check->name.str,
                    share->period.name.str);
           goto err;
         }
-        keep= keep && !drop_period;
-
-        DBUG_ASSERT(create_info->period_info.constr == NULL || drop_period);
-
-        if (keep)
+        else
         {
-          Item *expr_copy= check->expr->get_copy(thd);
-          check= new Virtual_column_info();
-          check->expr= expr_copy;
+          DBUG_ASSERT(create_info->period_info.constr == NULL);
           create_info->period_info.constr= check;
+          create_info->period_info.constr->automatic_name= true;
         }
       }
+
       /* see if the constraint depends on *only* on dropped fields */
       if (keep && dropped_fields)
       {
@@ -8682,6 +8686,35 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
       }
     }
   }
+
+  if (!alter_info->check_constraint_list.is_empty())
+  {
+    /* Check the table FOREIGN KEYs for name duplications. */
+    List <FOREIGN_KEY_INFO> fk_child_key_list;
+    FOREIGN_KEY_INFO *f_key;
+    table->file->get_foreign_key_list(thd, &fk_child_key_list);
+    List_iterator<FOREIGN_KEY_INFO> fk_key_it(fk_child_key_list);
+    while ((f_key= fk_key_it++))
+    {
+      List_iterator_fast<Virtual_column_info>
+        c_it(alter_info->check_constraint_list);
+      Virtual_column_info *check;
+      while ((check= c_it++))
+      {
+        if (!check->name.length || check->automatic_name)
+          continue;
+
+        if (check->name.length == f_key->foreign_id->length &&
+            my_strcasecmp(system_charset_info, f_key->foreign_id->str,
+                          check->name.str) == 0)
+        {
+          my_error(ER_DUP_CONSTRAINT_NAME, MYF(0), "CHECK", check->name.str);
+          goto err;
+        }
+      }
+    }
+  }
+
   /* Add new constraints */
   new_constraint_list.append(&alter_info->check_constraint_list);
 
@@ -10550,7 +10583,6 @@ copy_data_between_tables(THD *thd, TABLE *from, TABLE *to,
   bool make_versioned= !from->versioned() && to->versioned();
   bool make_unversioned= from->versioned() && !to->versioned();
   bool keep_versioned= from->versioned() && to->versioned();
-  bool drop_history= false; // XXX
   Field *to_row_start= NULL, *to_row_end= NULL, *from_row_end= NULL;
   MYSQL_TIME query_start;
   DBUG_ENTER("copy_data_between_tables");
@@ -10681,10 +10713,6 @@ copy_data_between_tables(THD *thd, TABLE *from, TABLE *to,
   {
     from_row_end= from->vers_end_field();
   }
-  else if (keep_versioned && drop_history)
-  {
-    from_row_end= from->vers_end_field();
-  }
 
   if (from_row_end)
     bitmap_set_bit(from->read_set, from_row_end->field_index);
@@ -10721,6 +10749,13 @@ copy_data_between_tables(THD *thd, TABLE *from, TABLE *to,
       error= 1;
       break;
     }
+
+    if (make_unversioned)
+    {
+      if (!from_row_end->is_max())
+        continue; // Drop history rows.
+    }
+
     if (unlikely(++thd->progress.counter >= time_to_report_progress))
     {
       time_to_report_progress+= MY_HOW_OFTEN_TO_WRITE/10;
@@ -10740,19 +10775,11 @@ copy_data_between_tables(THD *thd, TABLE *from, TABLE *to,
       copy_ptr->do_copy(copy_ptr);
     }
 
-    if (drop_history && from_row_end && !from_row_end->is_max())
-      continue;
-
     if (make_versioned)
     {
       to_row_start->set_notnull();
       to_row_start->store_time(&query_start);
       to_row_end->set_max();
-    }
-    else if (make_unversioned)
-    {
-      if (!from_row_end->is_max())
-        continue; // Drop history rows.
     }
 
     prev_insert_id= to->file->next_insert_id;

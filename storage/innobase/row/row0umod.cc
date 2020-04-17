@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1997, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, 2019, MariaDB Corporation.
+Copyright (c) 2017, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -76,7 +76,7 @@ dberr_t
 row_undo_mod_clust_low(
 /*===================*/
 	undo_node_t*	node,	/*!< in: row undo node */
-	ulint**		offsets,/*!< out: rec_get_offsets() on the record */
+	offset_t**	offsets,/*!< out: rec_get_offsets() on the record */
 	mem_heap_t**	offsets_heap,
 				/*!< in/out: memory heap that can be emptied */
 	mem_heap_t*	heap,	/*!< in/out: memory heap */
@@ -209,11 +209,11 @@ static ulint row_trx_id_offset(const rec_t* rec, const dict_index_t* index)
 	if (!trx_id_offset) {
 		/* Reserve enough offsets for the PRIMARY KEY and 2 columns
 		so that we can access DB_TRX_ID, DB_ROLL_PTR. */
-		ulint	offsets_[REC_OFFS_HEADER_SIZE + MAX_REF_PARTS + 2];
+		offset_t offsets_[REC_OFFS_HEADER_SIZE + MAX_REF_PARTS + 2];
 		rec_offs_init(offsets_);
 		mem_heap_t* heap = NULL;
 		const ulint trx_id_pos = index->n_uniq ? index->n_uniq : 1;
-		ulint* offsets = rec_get_offsets(rec, index, offsets_, true,
+		offset_t* offsets = rec_get_offsets(rec, index, offsets_, true,
 						 trx_id_pos + 1, &heap);
 		ut_ad(!heap);
 		ulint len;
@@ -236,8 +236,9 @@ static bool row_undo_mod_must_purge(undo_node_t* node, mtr_t* mtr)
 
 	btr_cur_t* btr_cur = btr_pcur_get_btr_cur(&node->pcur);
 	ut_ad(btr_cur->index->is_primary());
+	DEBUG_SYNC_C("rollback_purge_clust");
 
-	mtr_s_lock(&purge_sys.latch, mtr);
+	mtr->s_lock(&purge_sys.latch, __FILE__, __LINE__);
 
 	if (!purge_sys.view.changes_visible(node->new_trx_id,
 					    node->table->name)) {
@@ -288,12 +289,12 @@ row_undo_mod_clust(
 	online = dict_index_is_online_ddl(index);
 	if (online) {
 		ut_ad(node->trx->dict_operation_lock_mode != RW_X_LATCH);
-		mtr_s_lock(dict_index_get_lock(index), &mtr);
+		mtr_s_lock_index(index, &mtr);
 	}
 
 	mem_heap_t*	heap		= mem_heap_create(1024);
 	mem_heap_t*	offsets_heap	= NULL;
-	ulint*		offsets		= NULL;
+	offset_t*	offsets		= NULL;
 	const dtuple_t*	rebuilt_old_pk;
 	byte		sys[DATA_TRX_ID_LEN + DATA_ROLL_PTR_LEN];
 
@@ -369,6 +370,7 @@ row_undo_mod_clust(
 	      == node->new_trx_id);
 
 	btr_pcur_commit_specify_mtr(pcur, &mtr);
+	DEBUG_SYNC_C("rollback_undo_pk");
 
 	if (err != DB_SUCCESS) {
 		goto func_exit;
@@ -443,7 +445,7 @@ row_undo_mod_clust(
 			goto mtr_commit_exit;
 		}
 		rec_t* rec = btr_pcur_get_rec(pcur);
-		mtr_s_lock(&purge_sys.latch, &mtr);
+		mtr.s_lock(&purge_sys.latch, __FILE__, __LINE__);
 		if (!purge_sys.view.changes_visible(node->new_trx_id,
 						   node->table->name)) {
 			goto mtr_commit_exit;
@@ -453,8 +455,23 @@ row_undo_mod_clust(
 		ulint trx_id_pos = index->n_uniq ? index->n_uniq : 1;
 		/* Reserve enough offsets for the PRIMARY KEY and
 		2 columns so that we can access DB_TRX_ID, DB_ROLL_PTR. */
-		ulint	offsets_[REC_OFFS_HEADER_SIZE + MAX_REF_PARTS + 2];
+		offset_t offsets_[REC_OFFS_HEADER_SIZE + MAX_REF_PARTS + 2];
 		if (trx_id_offset) {
+#ifdef UNIV_DEBUG
+			ut_ad(rec_offs_validate(NULL, index, offsets));
+			if (buf_block_get_page_zip(
+				    btr_pcur_get_block(&node->pcur))) {
+				/* Below, page_zip_write_trx_id_and_roll_ptr()
+				needs offsets to access DB_TRX_ID,DB_ROLL_PTR.
+				We already computed offsets for possibly
+				another record in the clustered index.
+				Because the PRIMARY KEY is fixed-length,
+				the offsets for the PRIMARY KEY and
+				DB_TRX_ID,DB_ROLL_PTR are still valid.
+				Silence the rec_offs_validate() assertion. */
+				rec_offs_make_valid(rec, index, true, offsets);
+			}
+#endif
 		} else if (rec_is_metadata(rec, *index)) {
 			ut_ad(!buf_block_get_page_zip(btr_pcur_get_block(
 							      &node->pcur)));
@@ -536,10 +553,10 @@ row_undo_mod_del_mark_or_remove_sec_low(
 		is protected by index->lock. */
 		if (modify_leaf) {
 			mode = BTR_MODIFY_LEAF | BTR_ALREADY_S_LATCHED;
-			mtr_s_lock(dict_index_get_lock(index), &mtr);
+			mtr_s_lock_index(index, &mtr);
 		} else {
 			ut_ad(mode == (BTR_MODIFY_TREE | BTR_LATCH_FOR_DELETE));
-			mtr_sx_lock(dict_index_get_lock(index), &mtr);
+			mtr_sx_lock_index(index, &mtr);
 		}
 
 		if (row_log_online_op_try(index, entry, 0)) {
@@ -732,10 +749,10 @@ try_again:
 		is protected by index->lock. */
 		if (mode == BTR_MODIFY_LEAF) {
 			mode = BTR_MODIFY_LEAF | BTR_ALREADY_S_LATCHED;
-			mtr_s_lock(dict_index_get_lock(index), &mtr);
+			mtr_s_lock_index(index, &mtr);
 		} else {
 			ut_ad(mode == BTR_MODIFY_TREE);
-			mtr_sx_lock(dict_index_get_lock(index), &mtr);
+			mtr_sx_lock_index(index, &mtr);
 		}
 
 		if (row_log_online_op_try(index, entry, trx->id)) {
@@ -756,7 +773,7 @@ try_again:
 	switch (search_result) {
 		mem_heap_t*	heap;
 		mem_heap_t*	offsets_heap;
-		ulint*		offsets;
+		offset_t*	offsets;
 	case ROW_BUFFERED:
 	case ROW_NOT_DELETED_REF:
 		/* These are invalid outcomes, because the mode passed

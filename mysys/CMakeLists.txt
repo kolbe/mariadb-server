@@ -48,7 +48,13 @@ SET(MYSYS_SOURCES  array.c charset-def.c charset.c checksum.c my_default.c
                                 file_logger.c my_dlerror.c)
 
 IF (WIN32)
- SET (MYSYS_SOURCES ${MYSYS_SOURCES} my_winthread.c my_wincond.c my_winerr.c my_winfile.c my_windac.c my_conio.c)
+  SET (MYSYS_SOURCES ${MYSYS_SOURCES}
+    my_winthread.c
+    my_wincond.c
+    my_winerr.c
+    my_winfile.c
+    my_conio.c
+    my_win_popen.cc)
 ENDIF()
 
 IF(UNIX)
@@ -96,7 +102,3 @@ SET_TARGET_PROPERTIES(thr_timer PROPERTIES COMPILE_FLAGS "-DMAIN")
 ADD_EXECUTABLE(test_hash hash.c)
 TARGET_LINK_LIBRARIES(test_hash mysys)
 SET_TARGET_PROPERTIES(test_hash PROPERTIES COMPILE_FLAGS "-DMAIN")
-
-IF(MSVC)
-   INSTALL_DEBUG_TARGET(mysys DESTINATION ${INSTALL_LIBDIR}/debug)
-ENDIF()

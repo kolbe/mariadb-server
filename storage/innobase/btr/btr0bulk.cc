@@ -107,12 +107,12 @@ PageBulk::init()
 		} else {
 			ut_ad(!dict_index_is_spatial(m_index));
 			page_create(new_block, &m_mtr,
-				    dict_table_is_comp(m_index->table),
+				    m_index->table->not_redundant(),
 				    false);
-			mlog_write_ulint(FIL_PAGE_PREV + new_page, FIL_NULL,
-					 MLOG_4BYTES, &m_mtr);
-			mlog_write_ulint(FIL_PAGE_NEXT + new_page, FIL_NULL,
-					 MLOG_4BYTES, &m_mtr);
+			compile_time_assert(FIL_PAGE_NEXT
+					    == FIL_PAGE_PREV + 4);
+			compile_time_assert(FIL_NULL == 0xffffffff);
+			mlog_memset(new_block, FIL_PAGE_PREV, 8, 0xff, &m_mtr);
 			mlog_write_ulint(PAGE_HEADER + PAGE_LEVEL + new_page,
 					 m_level, MLOG_2BYTES, &m_mtr);
 			mlog_write_ull(PAGE_HEADER + PAGE_INDEX_ID + new_page,
@@ -175,7 +175,7 @@ PageBulk::init()
 void
 PageBulk::insert(
 	const rec_t*		rec,
-	ulint*			offsets)
+	offset_t*		offsets)
 {
 	ulint		rec_size;
 
@@ -188,7 +188,7 @@ PageBulk::insert(
 	/* Check whether records are in order. */
 	if (!page_rec_is_infimum(m_cur_rec)) {
 		rec_t*	old_rec = m_cur_rec;
-		ulint*	old_offsets = rec_get_offsets(
+		offset_t* old_offsets = rec_get_offsets(
 			old_rec, m_index, NULL,	is_leaf,
 			ULINT_UNDEFINED, &m_heap);
 
@@ -401,7 +401,7 @@ rec_t*
 PageBulk::getSplitRec()
 {
 	rec_t*		rec;
-	ulint*		offsets;
+	offset_t*	offsets;
 	ulint		total_used_size;
 	ulint		total_recs_size;
 	ulint		n_recs;
@@ -447,7 +447,7 @@ PageBulk::copyIn(
 {
 
 	rec_t*		rec = split_rec;
-	ulint*		offsets = NULL;
+	offset_t*	offsets = NULL;
 
 	ut_ad(m_rec_no == 0);
 	ut_ad(page_rec_is_user_rec(rec));
@@ -493,7 +493,7 @@ PageBulk::copyOut(
 	ut_ad(n > 0);
 
 	/* Set last record's next in page */
-	ulint*		offsets = NULL;
+	offset_t*	offsets = NULL;
 	rec = page_rec_get_prev(split_rec);
 	offsets = rec_get_offsets(rec, m_index, offsets,
 				  page_rec_is_leaf(split_rec),
@@ -603,7 +603,7 @@ the blob data is logged first, then the record is logged in bulk mode.
 dberr_t
 PageBulk::storeExt(
 	const big_rec_t*	big_rec,
-	ulint*			offsets)
+	offset_t*		offsets)
 {
 	/* Note: not all fileds are initialized in btr_pcur. */
 	btr_pcur_t	btr_pcur;
@@ -863,7 +863,7 @@ BtrBulk::insert(
 	ulint		rec_size = rec_get_converted_size(m_index, tuple, n_ext);
 	big_rec_t*	big_rec = NULL;
 	rec_t*		rec = NULL;
-	ulint*		offsets = NULL;
+	offset_t*	offsets = NULL;
 
 	if (page_bulk->needExt(tuple, rec_size)) {
 		/* The record is so big that we have to store some fields
@@ -1015,7 +1015,7 @@ BtrBulk::finish(dberr_t	err)
 
 		mtr.start();
 		m_index->set_modified(mtr);
-		mtr_x_lock(&m_index->lock, &mtr);
+		mtr_x_lock_index(m_index, &mtr);
 
 		ut_ad(last_page_no != FIL_NULL);
 		last_block = btr_block_get(

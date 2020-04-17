@@ -346,6 +346,13 @@ bool THD::open_temporary_table(TABLE_LIST *tl)
     DBUG_RETURN(false);
   }
 
+  if (!tl->db.str)
+  {
+    DBUG_PRINT("info",
+               ("Table reference to a temporary table must have database set"));
+    DBUG_RETURN(false);
+  }
+
   /*
     Temporary tables are not safe for parallel replication. They were
     designed to be visible to one thread only, so have no table locking.
@@ -1130,9 +1137,7 @@ TABLE *THD::open_temporary_table(TMP_TABLE_SHARE *share,
 
   /* Increment Slave_open_temp_table_definitions status variable count. */
   if (rgi_slave)
-  {
-    thread_safe_increment32(&slave_open_temp_tables);
-  }
+    slave_open_temp_tables++;
 
   DBUG_PRINT("tmptable", ("Opened table: '%s'.'%s  table: %p",
                           table->s->db.str,
@@ -1238,7 +1243,7 @@ void THD::close_temporary_table(TABLE *table)
     /* Natural invariant of temporary_tables */
     DBUG_ASSERT(slave_open_temp_tables || !temporary_tables);
     /* Decrement Slave_open_temp_table_definitions status variable count. */
-    thread_safe_decrement32(&slave_open_temp_tables);
+    slave_open_temp_tables--;
   }
 
   DBUG_VOID_RETURN;

@@ -554,6 +554,11 @@ static int table2maria(TABLE *table_arg, data_file_type row_type,
       if (!table_arg->field[field->field_index]->stored_in_db())
       {
         my_free(*recinfo_out);
+        if (table_arg->s->long_unique_table)
+        {
+          my_error(ER_TOO_LONG_KEY, MYF(0), table_arg->file->max_key_length());
+          DBUG_RETURN(HA_ERR_INDEX_COL_TOO_LONG);
+        }
         my_error(ER_KEY_BASED_ON_GENERATED_VIRTUAL_COLUMN, MYF(0));
         DBUG_RETURN(HA_ERR_UNSUPPORTED);
       }
@@ -1024,10 +1029,12 @@ can_enable_indexes(1), bulk_insert_single_undo(BULK_INSERT_NONE)
 {}
 
 
-handler *ha_maria::clone(const char *name, MEM_ROOT *mem_root)
+handler *ha_maria::clone(const char *name __attribute__((unused)),
+                         MEM_ROOT *mem_root)
 {
-  ha_maria *new_handler= static_cast <ha_maria *>(handler::clone(name,
-                                                                 mem_root));
+  ha_maria *new_handler=
+    static_cast <ha_maria *>(handler::clone(file->s->open_file_name.str,
+                                            mem_root));
   if (new_handler)
   {
     new_handler->file->state= file->state;
@@ -1189,7 +1196,7 @@ int ha_maria::open(const char *name, int mode, uint test_if_locked)
 
   /*
     For static size rows, tell MariaDB that we will access all bytes
-    in the record when writing it.  This signals MariaDB to initalize
+    in the record when writing it.  This signals MariaDB to initialize
     the full row to ensure we don't get any errors from valgrind and
     that all bytes in the row is properly reset.
   */
@@ -2150,7 +2157,32 @@ void ha_maria::start_bulk_insert(ha_rows rows, uint flags)
       else
       {
         my_bool all_keys= MY_TEST(flags & HA_CREATE_UNIQUE_INDEX_BY_SORT);
-        maria_disable_indexes_for_rebuild(file, rows, all_keys);
+        /*
+          Deactivate all indexes that can be recreated fast.
+          These include packed keys on which sorting will use more temporary
+          space than the max allowed file length or for which the unpacked keys
+          will take much more space than packed keys.
+          Note that 'rows' may be zero for the case when we don't know how many
+          rows we will put into the file.
+        */
+        MARIA_SHARE *share= file->s;
+        MARIA_KEYDEF    *key=share->keyinfo;
+        uint          i;
+
+        DBUG_ASSERT(share->state.state.records == 0 &&
+                    (!rows || rows >= MARIA_MIN_ROWS_TO_DISABLE_INDEXES));
+        for (i=0 ; i < share->base.keys ; i++,key++)
+        {
+          if (!(key->flag & (HA_SPATIAL | HA_AUTO_KEY | HA_RTREE_INDEX)) &&
+              ! maria_too_big_key_for_sort(key,rows) && share->base.auto_key != i+1 &&
+              (all_keys || !(key->flag & HA_NOSAME)) &&
+              table->key_info[i].algorithm != HA_KEY_ALG_LONG_HASH)
+          {
+            maria_clear_key_active(share->state.key_map, i);
+            file->update|= HA_STATE_CHANGED;
+            file->create_unique_index_by_sort= all_keys;
+          }
+        }
       }
       if (share->now_transactional)
       {

@@ -3759,7 +3759,7 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
           */
           field= key_part->field=field->make_new_field(&outparam->mem_root,
                                                        outparam, 0);
-          field->field_length= key_part->length;
+          const_cast<uint32_t&>(field->field_length)= key_part->length;
         }
       }
       if (!share->use_ext_keys)
@@ -4668,7 +4668,6 @@ bool check_column_name(const char *name)
   been opened.
 
   @param[in] table             The table to check
-  @param[in] table_f_count     Expected number of columns in the table
   @param[in] table_def         Expected structure of the table (column name
                                and type)
 
@@ -5109,6 +5108,9 @@ void TABLE::init(THD *thd, TABLE_LIST *tl)
   update_handler= NULL;
   check_unique_buf= NULL;
   vers_write= s->versioned;
+  quick_condition_rows=0;
+  no_cache= false;
+  initialize_quick_structures();
 #ifdef HAVE_REPLICATION
   /* used in RBR Triggers */
   master_had_triggers= 0;
@@ -7025,12 +7027,8 @@ void TABLE::mark_columns_needed_for_update()
     /*
       For System Versioning we have to read all columns since we store
       a copy of previous row with modified row_end back to a table.
-
-      Without write_set versioning.rpl,row is unstable until MDEV-16370 is
-      applied.
     */
     bitmap_union(read_set, &s->all_set);
-    bitmap_union(write_set, &s->all_set);
     need_signal= true;
   }
   if (check_constraints)
@@ -7193,8 +7191,16 @@ void TABLE::mark_columns_per_binlog_row_image()
           binary log will include all columns read anyway.
         */
         mark_columns_used_by_index_no_reset(s->primary_key, read_set);
-        /* Only write columns that have changed */
-        rpl_write_set= write_set;
+        if (versioned())
+        {
+          // TODO: After MDEV-18432 we don't pass history rows, so remove this:
+          rpl_write_set= &s->all_set;
+        }
+        else
+        {
+          /* Only write columns that have changed */
+          rpl_write_set= write_set;
+        }
         break;
 
       default:
@@ -9509,6 +9515,8 @@ bool vers_select_conds_t::eq(const vers_select_conds_t &conds) const
     return true;
   case SYSTEM_TIME_BEFORE:
     break;
+  case SYSTEM_TIME_HISTORY:
+    break;
   case SYSTEM_TIME_AS_OF:
     return start.eq(conds.start);
   case SYSTEM_TIME_FROM_TO:
@@ -9607,4 +9615,22 @@ bool TABLE::export_structure(THD *thd, Row_definition_list *defs)
       return true;
   }
   return false;
+}
+
+/*
+  @brief
+    Initialize all the quick structures that are used to stored the
+    estimates when the range optimizer is run.
+  @details
+    This is specifically needed when we read the TABLE structure from the
+    table cache. There can be some garbage data from previous queries
+    that need to be reset here.
+*/
+
+void TABLE::initialize_quick_structures()
+{
+  bzero(quick_rows, sizeof(quick_rows));
+  bzero(quick_key_parts, sizeof(quick_key_parts));
+  bzero(quick_costs, sizeof(quick_costs));
+  bzero(quick_n_ranges, sizeof(quick_n_ranges));
 }

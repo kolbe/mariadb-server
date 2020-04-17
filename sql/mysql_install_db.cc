@@ -188,7 +188,7 @@ int main(int argc, char **argv)
       die("--datadir option not provided, and default datadir not found");
       my_print_help(my_long_options);
     }
-    strncat(default_datadir, "\\data", sizeof(default_datadir));
+    strcat_s(default_datadir, "\\data");
     opt_datadir= default_datadir;
     printf("Default data directory is %s\n",opt_datadir);
   }
@@ -364,11 +364,12 @@ static int create_myini()
 
 static const char update_root_passwd_part1[]=
   "UPDATE mysql.global_priv SET priv=json_set(priv,"
+  "'$.password_last_changed', UNIX_TIMESTAMP(),"
   "'$.plugin','mysql_native_password',"
   "'$.authentication_string',PASSWORD(";
 static const char update_root_passwd_part2[]=
   ")) where User='root';\n";
-static const char remove_default_user_cmd[]= 
+static const char remove_default_user_cmd[]=
   "DELETE FROM mysql.user where User='';\n";
 static const char allow_remote_root_access_cmd[]=
   "CREATE TEMPORARY TABLE tmp_user LIKE global_priv;\n"

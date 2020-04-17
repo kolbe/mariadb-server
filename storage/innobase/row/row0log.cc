@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 2011, 2018, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, 2019, MariaDB Corporation.
+Copyright (c) 2017, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -645,7 +645,7 @@ row_log_table_delete(
 				page X-latched */
 	dict_index_t*	index,	/*!< in/out: clustered index, S-latched
 				or X-latched */
-	const ulint*	offsets,/*!< in: rec_get_offsets(rec,index) */
+	const offset_t*	offsets,/*!< in: rec_get_offsets(rec,index) */
 	const byte*	sys)	/*!< in: DB_TRX_ID,DB_ROLL_PTR that should
 				be logged, or NULL to use those in rec */
 {
@@ -936,7 +936,7 @@ row_log_table_low(
 				page X-latched */
 	dict_index_t*	index,	/*!< in/out: clustered index, S-latched
 				or X-latched */
-	const ulint*	offsets,/*!< in: rec_get_offsets(rec,index) */
+	const offset_t*	offsets,/*!< in: rec_get_offsets(rec,index) */
 	bool		insert,	/*!< in: true if insert, false if update */
 	const dtuple_t*	old_pk)	/*!< in: old PRIMARY KEY value (if !insert
 				and a PRIMARY KEY is being created) */
@@ -1105,7 +1105,7 @@ row_log_table_update(
 				page X-latched */
 	dict_index_t*	index,	/*!< in/out: clustered index, S-latched
 				or X-latched */
-	const ulint*	offsets,/*!< in: rec_get_offsets(rec,index) */
+	const offset_t*	offsets,/*!< in: rec_get_offsets(rec,index) */
 	const dtuple_t*	old_pk)	/*!< in: row_log_table_get_pk()
 				before the update */
 {
@@ -1137,6 +1137,7 @@ row_log_table_get_pk_old_col(
 /** Maps an old table column of a PRIMARY KEY column.
 @param[in]	ifield		clustered index field in the new table (after
 ALTER TABLE)
+@param[in]	index		the clustered index of ifield
 @param[in,out]	dfield		clustered index tuple field in the new table
 @param[in,out]	heap		memory heap for allocating dfield contents
 @param[in]	rec		clustered index leaf page record in the old
@@ -1152,10 +1153,11 @@ static
 dberr_t
 row_log_table_get_pk_col(
 	const dict_field_t*	ifield,
+	const dict_index_t*	index,
 	dfield_t*		dfield,
 	mem_heap_t*		heap,
 	const rec_t*		rec,
-	const ulint*		offsets,
+	const offset_t*		offsets,
 	ulint			i,
 	ulint			zip_size,
 	ulint			max_len,
@@ -1166,19 +1168,28 @@ row_log_table_get_pk_col(
 
 	field = rec_get_nth_field(rec, offsets, i, &len);
 
+	if (len == UNIV_SQL_DEFAULT) {
+		field = log->instant_field_value(i, &len);
+	}
+
 	if (len == UNIV_SQL_NULL) {
 		if (!log->allow_not_null) {
 			return(DB_INVALID_NULL);
 		}
 
-		ulint n_default_cols = i - DATA_N_SYS_COLS;
+		ulint new_i = dict_col_get_clust_pos(ifield->col, index);
+
+		if (UNIV_UNLIKELY(new_i >= log->defaults->n_fields)) {
+			ut_ad(0);
+			return DB_INVALID_NULL;
+		}
 
 		field = static_cast<const byte*>(
-			log->defaults->fields[n_default_cols].data);
+			log->defaults->fields[new_i].data);
 		if (!field) {
 			return(DB_INVALID_NULL);
 		}
-		len = log->defaults->fields[i - DATA_N_SYS_COLS].len;
+		len = log->defaults->fields[new_i].len;
 	}
 
 	if (rec_offs_nth_extern(offsets, i)) {
@@ -1221,7 +1232,7 @@ row_log_table_get_pk(
 				page X-latched */
 	dict_index_t*	index,	/*!< in/out: clustered index, S-latched
 				or X-latched */
-	const ulint*	offsets,/*!< in: rec_get_offsets(rec,index) */
+	const offset_t*	offsets,/*!< in: rec_get_offsets(rec,index) */
 	byte*		sys,	/*!< out: DB_TRX_ID,DB_ROLL_PTR for
 				row_log_table_delete(), or NULL */
 	mem_heap_t**	heap)	/*!< in/out: memory heap where allocated */
@@ -1337,7 +1348,7 @@ row_log_table_get_pk(
 				}
 
 				log->error = row_log_table_get_pk_col(
-					ifield, dfield, *heap,
+					ifield, new_index, dfield, *heap,
 					rec, offsets, i, zip_size, max_len,
 					log);
 
@@ -1425,7 +1436,7 @@ row_log_table_insert(
 				page X-latched */
 	dict_index_t*	index,	/*!< in/out: clustered index, S-latched
 				or X-latched */
-	const ulint*	offsets)/*!< in: rec_get_offsets(rec,index) */
+	const offset_t*	offsets)/*!< in: rec_get_offsets(rec,index) */
 {
 	row_log_table_low(rec, index, offsets, true, NULL);
 }
@@ -1516,7 +1527,7 @@ row_log_table_apply_convert_mrec(
 /*=============================*/
 	const mrec_t*		mrec,		/*!< in: merge record */
 	dict_index_t*		index,		/*!< in: index of mrec */
-	const ulint*		offsets,	/*!< in: offsets of mrec */
+	const offset_t*		offsets,	/*!< in: offsets of mrec */
 	row_log_t*		log,		/*!< in: rebuild context */
 	mem_heap_t*		heap,		/*!< in/out: memory heap */
 	dberr_t*		error)		/*!< out: DB_SUCCESS or
@@ -1644,12 +1655,12 @@ blob_done:
 		/* See if any columns were changed to NULL or NOT NULL. */
 		const dict_col_t*	new_col
 			= dict_table_get_nth_col(log->table, col_no);
-		ut_ad(new_col->mtype == col->mtype);
+		ut_ad(new_col->same_format(*col));
 
 		/* Assert that prtype matches except for nullability. */
-		ut_ad(!((new_col->prtype ^ col->prtype) & ~DATA_NOT_NULL));
 		ut_ad(!((new_col->prtype ^ dfield_get_type(dfield)->prtype)
-			& ~DATA_NOT_NULL));
+			& ~(DATA_NOT_NULL | DATA_VERSIONED
+			    | CHAR_COLL_MASK << 16 | DATA_LONG_TRUE_VARCHAR)));
 
 		if (new_col->prtype == col->prtype) {
 			continue;
@@ -1768,7 +1779,7 @@ row_log_table_apply_insert(
 /*=======================*/
 	que_thr_t*		thr,		/*!< in: query graph */
 	const mrec_t*		mrec,		/*!< in: record to insert */
-	const ulint*		offsets,	/*!< in: offsets of mrec */
+	const offset_t*		offsets,	/*!< in: offsets of mrec */
 	mem_heap_t*		offsets_heap,	/*!< in/out: memory heap
 						that can be emptied */
 	mem_heap_t*		heap,		/*!< in/out: memory heap */
@@ -1820,7 +1831,7 @@ row_log_table_apply_delete_low(
 /*===========================*/
 	btr_pcur_t*		pcur,		/*!< in/out: B-tree cursor,
 						will be trashed */
-	const ulint*		offsets,	/*!< in: offsets on pcur */
+	const offset_t*		offsets,	/*!< in: offsets on pcur */
 	mem_heap_t*		heap,		/*!< in/out: memory heap */
 	mtr_t*			mtr)		/*!< in/out: mini-transaction,
 						will be committed */
@@ -1913,7 +1924,7 @@ row_log_table_apply_delete(
 						DB_TRX_ID in the new
 						clustered index */
 	const mrec_t*		mrec,		/*!< in: merge record */
-	const ulint*		moffsets,	/*!< in: offsets of mrec */
+	const offset_t*		moffsets,	/*!< in: offsets of mrec */
 	mem_heap_t*		offsets_heap,	/*!< in/out: memory heap
 						that can be emptied */
 	mem_heap_t*		heap,		/*!< in/out: memory heap */
@@ -1924,7 +1935,7 @@ row_log_table_apply_delete(
 	dtuple_t*	old_pk;
 	mtr_t		mtr;
 	btr_pcur_t	pcur;
-	ulint*		offsets;
+	offset_t*	offsets;
 
 	ut_ad(rec_offs_n_fields(moffsets) == index->first_user_field());
 	ut_ad(!rec_offs_any_extern(moffsets));
@@ -2035,7 +2046,7 @@ row_log_table_apply_update(
 						DB_TRX_ID in the new
 						clustered index */
 	const mrec_t*		mrec,		/*!< in: new value */
-	const ulint*		offsets,	/*!< in: offsets of mrec */
+	const offset_t*		offsets,	/*!< in: offsets of mrec */
 	mem_heap_t*		offsets_heap,	/*!< in/out: memory heap
 						that can be emptied */
 	mem_heap_t*		heap,		/*!< in/out: memory heap */
@@ -2173,7 +2184,7 @@ func_exit_committed:
 	}
 
 	/* Prepare to update (or delete) the record. */
-	ulint*		cur_offsets	= rec_get_offsets(
+	offset_t*		cur_offsets	= rec_get_offsets(
 		btr_pcur_get_rec(&pcur), index, NULL, true,
 		ULINT_UNDEFINED, &offsets_heap);
 
@@ -2411,7 +2422,7 @@ row_log_table_apply_op(
 	mem_heap_t*		heap,		/*!< in/out: memory heap */
 	const mrec_t*		mrec,		/*!< in: merge record */
 	const mrec_t*		mrec_end,	/*!< in: end of buffer */
-	ulint*			offsets)	/*!< in/out: work area
+	offset_t*		offsets)	/*!< in/out: work area
 						for parsing mrec */
 {
 	row_log_t*	log	= dup->index->online_log;
@@ -2743,7 +2754,7 @@ row_log_table_apply_ops(
 	const mrec_t*	next_mrec_end;
 	mem_heap_t*	heap;
 	mem_heap_t*	offsets_heap;
-	ulint*		offsets;
+	offset_t*	offsets;
 	bool		has_index_lock;
 	dict_index_t*	index		= const_cast<dict_index_t*>(
 		dup->index);
@@ -2770,9 +2781,9 @@ row_log_table_apply_ops(
 
 	UNIV_MEM_INVALID(&mrec_end, sizeof mrec_end);
 
-	offsets = static_cast<ulint*>(ut_malloc_nokey(i * sizeof *offsets));
-	offsets[0] = i;
-	offsets[1] = dict_index_get_n_fields(index);
+	offsets = static_cast<offset_t*>(ut_malloc_nokey(i * sizeof *offsets));
+	rec_offs_set_n_alloc(offsets, i);
+	rec_offs_set_n_fields(offsets, dict_index_get_n_fields(index));
 
 	heap = mem_heap_create(srv_page_size);
 	offsets_heap = mem_heap_create(srv_page_size);
@@ -3317,7 +3328,7 @@ row_log_apply_op_low(
 {
 	mtr_t		mtr;
 	btr_cur_t	cursor;
-	ulint*		offsets = NULL;
+	offset_t*	offsets = NULL;
 
 	ut_ad(!dict_index_is_clust(index));
 
@@ -3551,14 +3562,13 @@ row_log_apply_op(
 					in exclusive mode */
 	const mrec_t*	mrec,		/*!< in: merge record */
 	const mrec_t*	mrec_end,	/*!< in: end of buffer */
-	ulint*		offsets)	/*!< in/out: work area for
+	offset_t*	offsets)	/*!< in/out: work area for
 					rec_init_offsets_temp() */
 
 {
 	enum row_op	op;
 	ulint		extra_size;
 	ulint		data_size;
-	ulint		n_ext;
 	dtuple_t*	entry;
 	trx_id_t	trx_id;
 
@@ -3636,10 +3646,10 @@ corrupted:
 	}
 
 	entry = row_rec_to_index_entry_low(
-		mrec - data_size, index, offsets, &n_ext, heap);
+		mrec - data_size, index, offsets, heap);
 	/* Online index creation is only implemented for secondary
 	indexes, which never contain off-page columns. */
-	ut_ad(n_ext == 0);
+	ut_ad(dtuple_get_n_ext(entry) == 0);
 
 	row_log_apply_op_low(index, dup, error, offsets_heap,
 			     has_index_lock, op, trx_id, entry);
@@ -3670,7 +3680,7 @@ row_log_apply_ops(
 	const mrec_t*	next_mrec_end;
 	mem_heap_t*	offsets_heap;
 	mem_heap_t*	heap;
-	ulint*		offsets;
+	offset_t*	offsets;
 	bool		has_index_lock;
 	const ulint	i	= 1 + REC_OFFS_HEADER_SIZE
 		+ dict_index_get_n_fields(index);
@@ -3681,9 +3691,9 @@ row_log_apply_ops(
 	ut_ad(index->online_log);
 	UNIV_MEM_INVALID(&mrec_end, sizeof mrec_end);
 
-	offsets = static_cast<ulint*>(ut_malloc_nokey(i * sizeof *offsets));
-	offsets[0] = i;
-	offsets[1] = dict_index_get_n_fields(index);
+	offsets = static_cast<offset_t*>(ut_malloc_nokey(i * sizeof *offsets));
+	rec_offs_set_n_alloc(offsets, i);
+	rec_offs_set_n_fields(offsets, dict_index_get_n_fields(index));
 
 	offsets_heap = mem_heap_create(srv_page_size);
 	heap = mem_heap_create(srv_page_size);

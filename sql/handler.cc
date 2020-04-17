@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2016, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2019, MariaDB Corporation.
+   Copyright (c) 2009, 2020, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -440,9 +440,9 @@ static int ha_finish_errors(void)
   return 0;
 }
 
-static volatile int32 need_full_discover_for_existence= 0;
-static volatile int32 engines_with_discover_file_names= 0;
-static volatile int32 engines_with_discover= 0;
+static Atomic_counter<int32> need_full_discover_for_existence(0);
+static Atomic_counter<int32> engines_with_discover_file_names(0);
+static Atomic_counter<int32> engines_with_discover(0);
 
 static int full_discover_for_existence(handlerton *, const char *, const char *)
 { return 0; }
@@ -464,13 +464,13 @@ static int hton_ext_based_table_discovery(handlerton *hton, LEX_CSTRING *db,
 static void update_discovery_counters(handlerton *hton, int val)
 {
   if (hton->discover_table_existence == full_discover_for_existence)
-    my_atomic_add32(&need_full_discover_for_existence,  val);
+    need_full_discover_for_existence+= val;
 
   if (hton->discover_table_names && hton->tablefile_extensions[0])
-    my_atomic_add32(&engines_with_discover_file_names, val);
+    engines_with_discover_file_names+= val;
 
   if (hton->discover_table)
-    my_atomic_add32(&engines_with_discover, val);
+    engines_with_discover+= val;
 }
 
 int ha_finalize_handlerton(st_plugin_int *plugin)
@@ -1513,7 +1513,8 @@ int ha_commit_trans(THD *thd, bool all)
 
 #if 1 // FIXME: This should be done in ha_prepare().
   if (rw_trans || (thd->lex->sql_command == SQLCOM_ALTER_TABLE &&
-                   thd->lex->alter_info.flags & ALTER_ADD_SYSTEM_VERSIONING))
+                   thd->lex->alter_info.flags & ALTER_ADD_SYSTEM_VERSIONING &&
+                   is_real_trans))
   {
     ulonglong trx_start_id= 0, trx_end_id= 0;
     for (Ha_trx_info *ha_info= trans->ha_list; ha_info; ha_info= ha_info->next())
@@ -1993,29 +1994,33 @@ int ha_commit_or_rollback_by_xid(XID *xid, bool commit)
 
 
 #ifndef DBUG_OFF
-/**
-  @note
-    This does not need to be multi-byte safe or anything
-*/
-static char* xid_to_str(char *buf, XID *xid)
+/** Converts XID to string.
+
+@param[out] buf output buffer
+@param[in] xid XID to convert
+
+@return pointer to converted string
+
+@note This does not need to be multi-byte safe or anything */
+char *xid_to_str(char *buf, const XID &xid)
 {
   int i;
   char *s=buf;
   *s++='\'';
-  for (i=0; i < xid->gtrid_length+xid->bqual_length; i++)
+  for (i= 0; i < xid.gtrid_length + xid.bqual_length; i++)
   {
-    uchar c=(uchar)xid->data[i];
+    uchar c= (uchar) xid.data[i];
     /* is_next_dig is set if next character is a number */
     bool is_next_dig= FALSE;
     if (i < XIDDATASIZE)
     {
-      char ch= xid->data[i+1];
+      char ch= xid.data[i + 1];
       is_next_dig= (ch >= '0' && ch <='9');
     }
-    if (i == xid->gtrid_length)
+    if (i == xid.gtrid_length)
     {
       *s++='\'';
-      if (xid->bqual_length)
+      if (xid.bqual_length)
       {
         *s++='.';
         *s++='\'';
@@ -2138,7 +2143,7 @@ static my_bool xarecover_handlerton(THD *unused, plugin_ref plugin,
         {
           DBUG_EXECUTE("info",{
             char buf[XIDDATASIZE*4+6];
-            _db_doprnt_("ignore xid %s", xid_to_str(buf, info->list+i));
+            _db_doprnt_("ignore xid %s", xid_to_str(buf, info->list[i]));
             });
           xid_cache_insert(info->list + i);
           info->found_foreign_xids++;
@@ -2165,7 +2170,7 @@ static my_bool xarecover_handlerton(THD *unused, plugin_ref plugin,
           {
             DBUG_EXECUTE("info",{
               char buf[XIDDATASIZE*4+6];
-              _db_doprnt_("commit xid %s", xid_to_str(buf, info->list+i));
+              _db_doprnt_("commit xid %s", xid_to_str(buf, info->list[i]));
               });
           }
         }
@@ -2176,7 +2181,7 @@ static my_bool xarecover_handlerton(THD *unused, plugin_ref plugin,
           {
             DBUG_EXECUTE("info",{
               char buf[XIDDATASIZE*4+6];
-              _db_doprnt_("rollback xid %s", xid_to_str(buf, info->list+i));
+              _db_doprnt_("rollback xid %s", xid_to_str(buf, info->list[i]));
               });
           }
         }
@@ -2674,11 +2679,13 @@ double handler::keyread_time(uint index, uint ranges, ha_rows rows)
   size_t len= table->key_info[index].key_length + ref_length;
   if (index == table->s->primary_key && table->file->primary_key_is_clustered())
     len= table->s->stored_rec_length;
-  uint keys_per_block= (uint) (stats.block_size/2.0/len+1);
-  ulonglong blocks= !rows ? 0 : (rows-1) / keys_per_block + 1;
   double cost= (double)rows*len/(stats.block_size+1)*IDX_BLOCK_COPY_COST;
   if (ranges)
+  {
+    uint keys_per_block= (uint) (stats.block_size/2.0/len+1);
+    ulonglong blocks= !rows ? 0 : (rows-1) / keys_per_block + 1;
     cost+= blocks;
+  }
   return cost;
 }
 
@@ -6812,14 +6819,14 @@ int handler::ha_delete_row(const uchar *buf)
   @retval != 0          Failure.
 */
 
-int handler::ha_direct_update_rows(ha_rows *update_rows)
+int handler::ha_direct_update_rows(ha_rows *update_rows, ha_rows *found_rows)
 {
   int error;
 
   MYSQL_UPDATE_ROW_START(table_share->db.str, table_share->table_name.str);
   mark_trx_read_write();
 
-  error = direct_update_rows(update_rows);
+  error = direct_update_rows(update_rows, found_rows);
   MYSQL_UPDATE_ROW_DONE(error);
   return error;
 }
@@ -6950,6 +6957,20 @@ void signal_log_not_needed(struct handlerton, char *log_file)
 void handler::set_lock_type(enum thr_lock_type lock)
 {
   table->reginfo.lock_type= lock;
+}
+
+Compare_keys handler::compare_key_parts(const Field &old_field,
+                                        const Column_definition &new_field,
+                                        const KEY_PART_INFO &old_part,
+                                        const KEY_PART_INFO &new_part) const
+{
+  if (!old_field.is_equal(new_field))
+    return Compare_keys::NotEqual;
+
+  if (old_part.length != new_part.length)
+    return Compare_keys::NotEqual;
+
+  return Compare_keys::Equal;
 }
 
 #ifdef WITH_WSREP

@@ -1,6 +1,6 @@
 /*****************************************************************************
-Copyright (c) 1994, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2013, 2019, MariaDB Corporation.
+Copyright (c) 1994, 2019, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2013, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -158,12 +158,12 @@ Otherwise written as 0. @see PAGE_ROOT_AUTO_INC */
 					not necessarily collation order;
 					this record may have been deleted */
 
-/* Directions of cursor movement */
-#define	PAGE_LEFT		1
-#define	PAGE_RIGHT		2
-#define	PAGE_SAME_REC		3
-#define	PAGE_SAME_PAGE		4
-#define	PAGE_NO_DIRECTION	5
+/* Directions of cursor movement (stored in PAGE_DIRECTION field) */
+constexpr uint16_t PAGE_LEFT= 1;
+constexpr uint16_t PAGE_RIGHT= 2;
+constexpr uint16_t PAGE_SAME_REC= 3;
+constexpr uint16_t PAGE_SAME_PAGE= 4;
+constexpr uint16_t PAGE_NO_DIRECTION= 5;
 
 #ifndef UNIV_INNOCHECKSUM
 
@@ -852,6 +852,22 @@ page_rec_is_last(
 	MY_ATTRIBUTE((warn_unused_result));
 
 /************************************************************//**
+true if distance between the records (measured in number of times we have to
+move to the next record) is at most the specified value
+@param[in]	left_rec	lefter record
+@param[in]	right_rec	righter record
+@param[in]	val		specified value to compare
+@return true if the distance is smaller than the value */
+UNIV_INLINE
+bool
+page_rec_distance_is_at_most(
+/*=========================*/
+	const rec_t*	left_rec,
+	const rec_t*	right_rec,
+	ulint		val)
+	MY_ATTRIBUTE((warn_unused_result));
+
+/************************************************************//**
 true if the record is the second last user record on a page.
 @return true if the second last user record */
 UNIV_INLINE
@@ -871,17 +887,6 @@ page_rec_find_owner_rec(
 /*====================*/
 	rec_t*	rec);	/*!< in: the physical record */
 
-/***********************************************************************//**
-Write a 32-bit field in a data dictionary record. */
-UNIV_INLINE
-void
-page_rec_write_field(
-/*=================*/
-	rec_t*	rec,	/*!< in/out: record to update */
-	ulint	i,	/*!< in: index of the field to update */
-	ulint	val,	/*!< in: value to write */
-	mtr_t*	mtr)	/*!< in/out: mini-transaction */
-	MY_ATTRIBUTE((nonnull));
 /************************************************************//**
 Returns the maximum combined size of records which can be inserted on top
 of record heap.
@@ -969,7 +974,7 @@ page_mem_free(
 	rec_t*			rec,	/*!< in: pointer to the (origin of)
 					record */
 	const dict_index_t*	index,	/*!< in: index of rec */
-	const ulint*		offsets);/*!< in: array returned by
+	const offset_t*		offsets);/*!< in: array returned by
 					 rec_get_offsets() */
 
 /** Read the PAGE_DIRECTION field from a byte.
@@ -1216,7 +1221,7 @@ void
 page_rec_print(
 /*===========*/
 	const rec_t*	rec,	/*!< in: physical record */
-	const ulint*	offsets);/*!< in: record descriptor */
+	const offset_t*	offsets);/*!< in: record descriptor */
 # ifdef UNIV_BTR_PRINT
 /***************************************************************//**
 This is used to print the contents of the directory for
@@ -1263,7 +1268,7 @@ ibool
 page_rec_validate(
 /*==============*/
 	const rec_t*	rec,	/*!< in: physical record */
-	const ulint*	offsets);/*!< in: array returned by rec_get_offsets() */
+	const offset_t*	offsets);/*!< in: array returned by rec_get_offsets() */
 #ifdef UNIV_DEBUG
 /***************************************************************//**
 Checks that the first directory slot points to the infimum record and

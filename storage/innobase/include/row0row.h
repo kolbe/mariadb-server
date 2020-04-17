@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1996, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2016, 2017, MariaDB Corporation.
+Copyright (c) 2016, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -44,7 +44,7 @@ ulint
 row_get_trx_id_offset(
 /*==================*/
 	const dict_index_t*	index,	/*!< in: clustered index */
-	const ulint*		offsets)/*!< in: record offsets */
+	const offset_t*		offsets)/*!< in: record offsets */
 	MY_ATTRIBUTE((nonnull, warn_unused_result));
 /*********************************************************************//**
 Reads the trx id field from a clustered index record.
@@ -55,7 +55,7 @@ row_get_rec_trx_id(
 /*===============*/
 	const rec_t*		rec,	/*!< in: record */
 	const dict_index_t*	index,	/*!< in: clustered index */
-	const ulint*		offsets)/*!< in: rec_get_offsets(rec, index) */
+	const offset_t*		offsets)/*!< in: rec_get_offsets(rec, index) */
 	MY_ATTRIBUTE((nonnull, warn_unused_result));
 /*********************************************************************//**
 Reads the roll pointer field from a clustered index record.
@@ -66,7 +66,7 @@ row_get_rec_roll_ptr(
 /*=================*/
 	const rec_t*		rec,	/*!< in: record */
 	const dict_index_t*	index,	/*!< in: clustered index */
-	const ulint*		offsets)/*!< in: rec_get_offsets(rec, index) */
+	const offset_t*		offsets)/*!< in: rec_get_offsets(rec, index) */
 	MY_ATTRIBUTE((nonnull, warn_unused_result));
 
 /* Flags for row build type. */
@@ -139,7 +139,7 @@ row_build(
 					this record must be at least
 					s-latched and the latch held
 					as long as the row dtuple is used! */
-	const ulint*		offsets,/*!< in: rec_get_offsets(rec,index)
+	const offset_t*		offsets,/*!< in: rec_get_offsets(rec,index)
 					or NULL, in which case this function
 					will invoke rec_get_offsets() */
 	const dict_table_t*	col_table,
@@ -190,7 +190,7 @@ row_build_w_add_vcol(
 	ulint			type,
 	const dict_index_t*	index,
 	const rec_t*		rec,
-	const ulint*		offsets,
+	const offset_t*		offsets,
 	const dict_table_t*	col_table,
 	const dtuple_t*		defaults,
 	const dict_add_v_col_t*	add_v,
@@ -207,9 +207,7 @@ row_rec_to_index_entry_low(
 /*=======================*/
 	const rec_t*		rec,	/*!< in: record in the index */
 	const dict_index_t*	index,	/*!< in: index */
-	const ulint*		offsets,/*!< in: rec_get_offsets(rec, index) */
-	ulint*			n_ext,	/*!< out: number of externally
-					stored columns */
+	const offset_t*		offsets,/*!< in: rec_get_offsets(rec, index) */
 	mem_heap_t*		heap)	/*!< in: memory heap from which
 					the memory needed is allocated */
 	MY_ATTRIBUTE((warn_unused_result));
@@ -222,9 +220,7 @@ row_rec_to_index_entry(
 /*===================*/
 	const rec_t*		rec,	/*!< in: record in the index */
 	const dict_index_t*	index,	/*!< in: index */
-	const ulint*		offsets,/*!< in/out: rec_get_offsets(rec) */
-	ulint*			n_ext,	/*!< out: number of externally
-					stored columns */
+	const offset_t*		offsets,/*!< in/out: rec_get_offsets(rec) */
 	mem_heap_t*		heap)	/*!< in: memory heap from which
 					the memory needed is allocated */
 	MY_ATTRIBUTE((warn_unused_result));
@@ -233,7 +229,6 @@ row_rec_to_index_entry(
 @param[in]	rec		metadata record
 @param[in]	index		clustered index after instant ALTER TABLE
 @param[in]	offsets		rec_get_offsets(rec)
-@param[out]	n_ext		number of externally stored fields
 @param[in,out]	heap		memory heap for allocations
 @param[in]	info_bits	the info_bits after an update
 @param[in]	pad		whether to pad to index->n_fields */
@@ -241,8 +236,7 @@ dtuple_t*
 row_metadata_to_tuple(
 	const rec_t*		rec,
 	const dict_index_t*	index,
-	const ulint*		offsets,
-	ulint*			n_ext,
+	const offset_t*		offsets,
 	mem_heap_t*		heap,
 	ulint			info_bits,
 	bool			pad)
@@ -287,7 +281,7 @@ row_build_row_ref_in_tuple(
 					held as long as the row
 					reference is used! */
 	const dict_index_t*	index,	/*!< in: secondary index */
-	ulint*			offsets)/*!< in: rec_get_offsets(rec, index)
+	offset_t*		offsets)/*!< in: rec_get_offsets(rec, index)
 					or NULL */
 	MY_ATTRIBUTE((nonnull(1,2,3)));
 /*******************************************************************//**
@@ -305,7 +299,7 @@ row_build_row_ref_fast(
 	const rec_t*	rec,	/*!< in: secondary index record;
 				must be preserved while ref is used, as we do
 				not copy field values to heap */
-	const ulint*	offsets);/*!< in: array returned by rec_get_offsets() */
+	const offset_t*	offsets);/*!< in: array returned by rec_get_offsets() */
 /***************************************************************//**
 Searches the clustered index record for a row, if we have the row
 reference.

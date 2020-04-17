@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1996, 2018, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2018, 2019, MariaDB Corporation.
+Copyright (c) 2018, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -412,7 +412,7 @@ row_build_low(
 	ulint			type,
 	const dict_index_t*	index,
 	const rec_t*		rec,
-	const ulint*		offsets,
+	const offset_t*		offsets,
 	const dict_table_t*	col_table,
 	const dtuple_t*		defaults,
 	const dict_add_v_col_t*	add_v,
@@ -428,7 +428,7 @@ row_build_low(
 	byte*			buf;
 	ulint			j;
 	mem_heap_t*		tmp_heap	= NULL;
-	ulint			offsets_[REC_OFFS_NORMAL_SIZE];
+	offset_t		offsets_[REC_OFFS_NORMAL_SIZE];
 	rec_offs_init(offsets_);
 
 	ut_ad(index != NULL);
@@ -476,7 +476,7 @@ row_build_low(
 	}
 
 	/* Avoid a debug assertion in rec_offs_validate(). */
-	rec_offs_make_valid(copy, index, true, const_cast<ulint*>(offsets));
+	rec_offs_make_valid(copy, index, true, const_cast<offset_t*>(offsets));
 
 	if (!col_table) {
 		ut_ad(!col_map);
@@ -584,7 +584,7 @@ row_build_low(
 		}
 	}
 
-	rec_offs_make_valid(rec, index, true, const_cast<ulint*>(offsets));
+	rec_offs_make_valid(rec, index, true, const_cast<offset_t*>(offsets));
 
 	ut_ad(dtuple_check_typed(row));
 
@@ -637,7 +637,7 @@ row_build(
 					this record must be at least
 					s-latched and the latch held
 					as long as the row dtuple is used! */
-	const ulint*		offsets,/*!< in: rec_get_offsets(rec,index)
+	const offset_t*		offsets,/*!< in: rec_get_offsets(rec,index)
 					or NULL, in which case this function
 					will invoke rec_get_offsets() */
 	const dict_table_t*	col_table,
@@ -690,7 +690,7 @@ row_build_w_add_vcol(
 	ulint			type,
 	const dict_index_t*	index,
 	const rec_t*		rec,
-	const ulint*		offsets,
+	const offset_t*		offsets,
 	const dict_table_t*	col_table,
 	const dtuple_t*		defaults,
 	const dict_add_v_col_t*	add_v,
@@ -721,8 +721,7 @@ dtuple_t*
 row_rec_to_index_entry_impl(
 	const rec_t*		rec,
 	const dict_index_t*	index,
-	const ulint*		offsets,
-	ulint*			n_ext,
+	const offset_t*		offsets,
 	mem_heap_t*		heap,
 	ulint			info_bits = 0,
 	bool			pad = false)
@@ -738,8 +737,6 @@ row_rec_to_index_entry_impl(
 	/* Because this function may be invoked by row0merge.cc
 	on a record whose header is in different format, the check
 	rec_offs_validate(rec, index, offsets) must be avoided here. */
-	ut_ad(n_ext);
-	*n_ext = 0;
 
 	const bool got = mblob == 2 && rec_is_alter_metadata(rec, *index);
 	ulint rec_len = rec_offs_n_fields(offsets);
@@ -790,7 +787,6 @@ row_rec_to_index_entry_impl(
 
 		if (rec_offs_nth_extern(offsets, i)) {
 			dfield_set_ext(dfield);
-			++*n_ext;
 		}
 	}
 
@@ -833,7 +829,6 @@ init_metadata:
 		ut_ad(len == FIELD_REF_SIZE);
 		dfield_set_data(dfield, field, len);
 		dfield_set_ext(dfield++);
-		++*n_ext;
 copy_user_fields:
 		for (; i < rec_len; i++, dfield++) {
 			dict_col_copy_type(dict_index_get_nth_col(index, j++),
@@ -851,7 +846,6 @@ copy_user_fields:
 
 			if (rec_offs_nth_extern(offsets, i)) {
 				dfield_set_ext(dfield);
-				++*n_ext;
 			}
 		}
 	}
@@ -870,18 +864,15 @@ copy_user_fields:
 @param[in]	rec	index record
 @param[in]	index	index
 @param[in]	offsets	rec_get_offsets(rec, index)
-@param[out]	n_ext	number of externally stored columns
 @param[in,out]	heap	memory heap for allocations */
 dtuple_t*
 row_rec_to_index_entry_low(
 	const rec_t*		rec,
 	const dict_index_t*	index,
-	const ulint*		offsets,
-	ulint*			n_ext,
+	const offset_t*		offsets,
 	mem_heap_t*		heap)
 {
-	return row_rec_to_index_entry_impl<false>(
-		rec, index, offsets, n_ext, heap);
+	return row_rec_to_index_entry_impl<false>(rec, index, offsets, heap);
 }
 
 /*******************************************************************//**
@@ -893,9 +884,7 @@ row_rec_to_index_entry(
 /*===================*/
 	const rec_t*		rec,	/*!< in: record in the index */
 	const dict_index_t*	index,	/*!< in: index */
-	const ulint*		offsets,/*!< in: rec_get_offsets(rec) */
-	ulint*			n_ext,	/*!< out: number of externally
-					stored columns */
+	const offset_t*		offsets,/*!< in: rec_get_offsets(rec) */
 	mem_heap_t*		heap)	/*!< in: memory heap from which
 					the memory needed is allocated */
 {
@@ -911,16 +900,16 @@ row_rec_to_index_entry(
 		rec, offsets);
 
 	rec_offs_make_valid(copy_rec, index, true,
-			    const_cast<ulint*>(offsets));
+			    const_cast<offset_t*>(offsets));
 
 	dtuple_t* entry = rec_is_alter_metadata(copy_rec, *index)
 		? row_rec_to_index_entry_impl<true,1>(
-			copy_rec, index, offsets, n_ext, heap)
+			copy_rec, index, offsets, heap)
 		: row_rec_to_index_entry_impl<true>(
-			copy_rec, index, offsets, n_ext, heap);
+			copy_rec, index, offsets, heap);
 
 	rec_offs_make_valid(rec, index, true,
-			    const_cast<ulint*>(offsets));
+			    const_cast<offset_t*>(offsets));
 
 	dtuple_set_info_bits(entry,
 			     rec_get_info_bits(rec, rec_offs_comp(offsets)));
@@ -932,7 +921,6 @@ row_rec_to_index_entry(
 @param[in]	rec		metadata record
 @param[in]	index		clustered index after instant ALTER TABLE
 @param[in]	offsets		rec_get_offsets(rec)
-@param[out]	n_ext		number of externally stored fields
 @param[in,out]	heap		memory heap for allocations
 @param[in]	info_bits	the info_bits after an update
 @param[in]	pad		whether to pad to index->n_fields */
@@ -940,8 +928,7 @@ dtuple_t*
 row_metadata_to_tuple(
 	const rec_t*		rec,
 	const dict_index_t*	index,
-	const ulint*		offsets,
-	ulint*			n_ext,
+	const offset_t*		offsets,
 	mem_heap_t*		heap,
 	ulint			info_bits,
 	bool			pad)
@@ -957,17 +944,17 @@ row_metadata_to_tuple(
 		rec, offsets);
 
 	rec_offs_make_valid(copy_rec, index, true,
-			    const_cast<ulint*>(offsets));
+			    const_cast<offset_t*>(offsets));
 
 	dtuple_t* entry = info_bits == REC_INFO_METADATA_ALTER
 		|| rec_is_alter_metadata(copy_rec, *index)
 		? row_rec_to_index_entry_impl<true,2>(
-			copy_rec, index, offsets, n_ext, heap, info_bits, pad)
+			copy_rec, index, offsets, heap, info_bits, pad)
 		: row_rec_to_index_entry_impl<true>(
-			copy_rec, index, offsets, n_ext, heap);
+			copy_rec, index, offsets, heap);
 
 	rec_offs_make_valid(rec, index, true,
-			    const_cast<ulint*>(offsets));
+			    const_cast<offset_t*>(offsets));
 
 	dtuple_set_info_bits(entry, info_bits);
 	return entry;
@@ -1007,8 +994,8 @@ row_build_row_ref(
 	ulint		clust_col_prefix_len;
 	ulint		i;
 	mem_heap_t*	tmp_heap	= NULL;
-	ulint		offsets_[REC_OFFS_NORMAL_SIZE];
-	ulint*		offsets		= offsets_;
+	offset_t	offsets_[REC_OFFS_NORMAL_SIZE];
+	offset_t*	offsets		= offsets_;
 	rec_offs_init(offsets_);
 
 	ut_ad(index != NULL);
@@ -1103,7 +1090,7 @@ row_build_row_ref_in_tuple(
 					held as long as the row
 					reference is used! */
 	const dict_index_t*	index,	/*!< in: secondary index */
-	ulint*			offsets)/*!< in: rec_get_offsets(rec, index)
+	offset_t*		offsets)/*!< in: rec_get_offsets(rec, index)
 					or NULL */
 {
 	const dict_index_t*	clust_index;
@@ -1115,7 +1102,7 @@ row_build_row_ref_in_tuple(
 	ulint			clust_col_prefix_len;
 	ulint			i;
 	mem_heap_t*		heap		= NULL;
-	ulint			offsets_[REC_OFFS_NORMAL_SIZE];
+	offset_t		offsets_[REC_OFFS_NORMAL_SIZE];
 	rec_offs_init(offsets_);
 
 	ut_ad(!dict_index_is_clust(index));

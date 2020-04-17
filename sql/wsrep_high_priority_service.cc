@@ -429,6 +429,7 @@ int Wsrep_high_priority_service::log_dummy_write_set(const wsrep::ws_handle& ws_
       cs.before_rollback();
       cs.after_rollback();
     }
+    wsrep_set_SE_checkpoint(ws_meta.gtid());
     ret= ret || cs.provider().commit_order_leave(ws_handle, ws_meta, err);
     cs.after_applying();
   }
@@ -452,11 +453,15 @@ Wsrep_applier_service::Wsrep_applier_service(THD* thd)
   thd->wsrep_cs().open(wsrep::client_id(thd->thread_id));
   thd->wsrep_cs().before_command();
   thd->wsrep_cs().debug_log_level(wsrep_debug);
-
+  if (!thd->slave_thread)
+    thd->system_thread_info.rpl_sql_info=
+      new rpl_sql_thread_info(thd->wsrep_rgi->rli->mi->rpl_filter);
 }
 
 Wsrep_applier_service::~Wsrep_applier_service()
 {
+  if (!m_thd->slave_thread)
+    delete m_thd->system_thread_info.rpl_sql_info;
   m_thd->wsrep_cs().after_command_before_result();
   m_thd->wsrep_cs().after_command_after_result();
   m_thd->wsrep_cs().close();
@@ -507,6 +512,14 @@ int Wsrep_applier_service::apply_write_set(const wsrep::ws_meta& ws_meta,
   }
   thd_proc_info(thd, "wsrep applied write set");
   DBUG_RETURN(ret);
+}
+
+int Wsrep_applier_service::apply_nbo_begin(const wsrep::ws_meta& ws_meta,
+                                           const wsrep::const_buffer& data,
+                                           wsrep::mutable_buffer& err)
+{
+  DBUG_ENTER("Wsrep_applier_service::apply_nbo_begin");
+  DBUG_RETURN(0);
 }
 
 void Wsrep_applier_service::after_apply()
@@ -590,9 +603,7 @@ Wsrep_replayer_service::~Wsrep_replayer_service()
   THD* replayer_thd= m_thd;
   THD* orig_thd= m_orig_thd;
 
-  /* Store replay result/state to original thread wsrep client
-     state and switch execution context back to original. */
-  orig_thd->wsrep_cs().after_replay(replayer_thd->wsrep_trx());
+  /* Switch execution context back to original. */
   wsrep_after_apply(replayer_thd);
   wsrep_after_command_ignore_result(replayer_thd);
   wsrep_close(replayer_thd);

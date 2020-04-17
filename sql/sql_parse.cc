@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2017, Oracle and/or its affiliates.
-   Copyright (c) 2008, 2019, MariaDB
+   Copyright (c) 2008, 2020, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -1844,7 +1844,6 @@ bool dispatch_command(enum enum_server_command command, THD *thd,
     while (!thd->killed && (parser_state.m_lip.found_semicolon != NULL) &&
            ! thd->is_error())
     {
-      thd->get_stmt_da()->set_skip_flush();
       /*
         Multiple queries exist, execute them individually
       */
@@ -3528,7 +3527,7 @@ mysql_execute_command(THD *thd)
      * and dirty reads (if configured)
      */
     if (!(thd->wsrep_applier) &&
-        !(wsrep_ready_get() && wsrep_reject_queries == WSREP_REJECT_NONE)    &&
+        !(wsrep_ready_get() && wsrep_reject_queries == WSREP_REJECT_NONE)  &&
         !(thd->variables.wsrep_dirty_reads &&
           (sql_command_flags[lex->sql_command] & CF_CHANGES_DATA) == 0)    &&
         !wsrep_tables_accessible_when_detached(all_tables)                 &&
@@ -4778,8 +4777,10 @@ mysql_execute_command(THD *thd)
     {
       result= new (thd->mem_root) multi_delete(thd, aux_tables,
                                                lex->table_count);
-      if (unlikely(result))
+      if (likely(result))
       {
+        if (unlikely(select_lex->vers_setup_conds(thd, aux_tables)))
+          goto multi_delete_error;
         res= mysql_select(thd,
                           select_lex->get_table_list(),
                           select_lex->with_wild,
@@ -4801,6 +4802,7 @@ mysql_execute_command(THD *thd)
           if (lex->describe || lex->analyze_stmt)
             res= thd->lex->explain->send_explain(thd);
         }
+      multi_delete_error:
         delete result;
       }
     }
@@ -5173,7 +5175,7 @@ mysql_execute_command(THD *thd)
   /* Don't do it, if we are inside a SP */
   if (!thd->spcont)
   {
-    delete lex->sphead;
+    sp_head::destroy(lex->sphead);
     lex->sphead= NULL;
   }
   /* lex->unit.cleanup() is called outside, no need to call it here */
@@ -9084,8 +9086,8 @@ kill_one_thread(THD *thd, longlong id, killed_state kill_signal, killed_type typ
     else
       error= (type == KILL_TYPE_QUERY ? ER_KILL_QUERY_DENIED_ERROR :
                                         ER_KILL_DENIED_ERROR);
-    mysql_mutex_unlock(&tmp->LOCK_thd_kill);
     if (WSREP(tmp)) mysql_mutex_unlock(&tmp->LOCK_thd_data);
+    mysql_mutex_unlock(&tmp->LOCK_thd_kill);
   }
   DBUG_PRINT("exit", ("%d", error));
   DBUG_RETURN(error);
@@ -9595,7 +9597,7 @@ bool update_precheck(THD *thd, TABLE_LIST *tables)
 bool delete_precheck(THD *thd, TABLE_LIST *tables)
 {
   DBUG_ENTER("delete_precheck");
-  if (tables->vers_conditions.is_set())
+  if (tables->vers_conditions.delete_history)
   {
     if (check_one_table_access(thd, DELETE_HISTORY_ACL, tables))
       DBUG_RETURN(TRUE);
